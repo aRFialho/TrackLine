@@ -1,0 +1,16 @@
+/// <reference types="vite/client" />
+
+interface TrackLineDesktopBridge {
+  platform?: string;
+  apiBaseUrl?: string;
+}
+
+interface CapacitorBridge {
+  isNativePlatform?: () => boolean;
+  getPlatform?: () => string;
+}
+
+interface Window {
+  trackline?: TrackLineDesktopBridge;
+  Capacitor?: CapacitorBridge;
+}

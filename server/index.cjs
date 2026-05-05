@@ -1,0 +1,801 @@
+const express = require("express");
+const cors = require("cors");
+const dotenv = require("dotenv");
+const dayjs = require("dayjs");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const fs = require("node:fs");
+const path = require("node:path");
+const { Pool } = require("pg");
+
+const envCandidates = [
+  process.resourcesPath ? path.join(process.resourcesPath, ".env") : undefined,
+  path.resolve(process.cwd(), ".env"),
+  path.resolve(__dirname, "..", ".env")
+].filter(Boolean);
+
+const envPath = envCandidates.find((candidate) => fs.existsSync(candidate));
+if (envPath) {
+  dotenv.config({ path: envPath });
+} else {
+  dotenv.config();
+}
+
+const app = express();
+const port = Number(process.env.API_PORT || 8787);
+const jwtSecret = process.env.JWT_SECRET || "trackline-dev-secret";
+
+app.use(cors());
+app.use(express.json({ limit: "4mb" }));
+
+const databaseUrl = process.env.DATABASE_URL;
+if (!databaseUrl) {
+  throw new Error("DATABASE_URL nao encontrada no .env");
+}
+
+const pool = new Pool({
+  connectionString: databaseUrl
+});
+
+const sseClients = new Set();
+
+function signAccessToken(user) {
+  return jwt.sign(
+    {
+      sub: user.id,
+      email: user.email,
+      role: user.role
+    },
+    jwtSecret,
+    { expiresIn: "12h" }
+  );
+}
+
+function requireAuth(req, res, next) {
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith("Bearer ")) {
+    res.status(401).json({ message: "Nao autenticado." });
+    return;
+  }
+  const token = auth.slice("Bearer ".length);
+  try {
+    const payload = jwt.verify(token, jwtSecret);
+    req.auth = payload;
+    next();
+  } catch (_error) {
+    res.status(401).json({ message: "Token invalido ou expirado." });
+  }
+}
+
+function requireAdmin(req, res, next) {
+  if (req.auth?.role !== "admin") {
+    res.status(403).json({ message: "Acesso restrito ao administrador." });
+    return;
+  }
+  next();
+}
+
+function broadcastRefresh() {
+  const payload = `event: refresh\ndata: {"at":"${new Date().toISOString()}"}\n\n`;
+  for (const client of sseClients) {
+    try {
+      client.write(payload);
+    } catch (_error) {
+      // ignore broken pipe; close handler will cleanup
+    }
+  }
+}
+
+const mapSchedule = (row) => ({
+  workStart: String(row.work_start).slice(0, 5),
+  workEnd: String(row.work_end).slice(0, 5),
+  lunchStart: String(row.lunch_start).slice(0, 5),
+  lunchEnd: String(row.lunch_end).slice(0, 5)
+});
+
+const clampDate = (date, start, end) => {
+  if (date.isBefore(start)) {
+    return start;
+  }
+  if (date.isAfter(end)) {
+    return end;
+  }
+  return date;
+};
+
+const dailyRange = (base, hhmm) => {
+  const [hour, minute] = hhmm.split(":").map(Number);
+  return base.hour(hour).minute(minute).second(0).millisecond(0);
+};
+
+const minutesBetween = (start, end) => {
+  if (!end.isAfter(start)) {
+    return 0;
+  }
+  return end.diff(start, "minute");
+};
+
+const calculateUsefulMinutes = (startIso, endIso, schedule) => {
+  let cursor = dayjs(startIso);
+  const end = dayjs(endIso);
+
+  if (!end.isAfter(cursor)) {
+    return 0;
+  }
+
+  let total = 0;
+  while (cursor.startOf("day").isBefore(end) || cursor.isSame(end, "day")) {
+    const base = cursor.startOf("day");
+    const workStart = dailyRange(base, schedule.workStart);
+    const workEnd = dailyRange(base, schedule.workEnd);
+    const lunchStart = dailyRange(base, schedule.lunchStart);
+    const lunchEnd = dailyRange(base, schedule.lunchEnd);
+
+    const daySliceStart = clampDate(cursor, workStart, workEnd);
+    const daySliceEnd = clampDate(end.isBefore(workEnd) ? end : workEnd, workStart, workEnd);
+
+    if (daySliceEnd.isAfter(daySliceStart)) {
+      const fullMinutes = minutesBetween(daySliceStart, daySliceEnd);
+      const overlapStart = daySliceStart.isAfter(lunchStart) ? daySliceStart : lunchStart;
+      const overlapEnd = daySliceEnd.isBefore(lunchEnd) ? daySliceEnd : lunchEnd;
+      const lunchMinutes = minutesBetween(overlapStart, overlapEnd);
+      total += Math.max(0, fullMinutes - lunchMinutes);
+    }
+
+    cursor = base.add(1, "day");
+    if (cursor.isAfter(end)) {
+      break;
+    }
+  }
+
+  return total;
+};
+
+async function loadSnapshot(client) {
+  const [scheduleRs, sectorsRs, employeesRs, ordersRs, itemsRs, operationsRs, notificationsRs] = await Promise.all([
+    client.query(
+      "SELECT work_start, work_end, lunch_start, lunch_end FROM public.work_schedules ORDER BY created_at ASC LIMIT 1;"
+    ),
+    client.query("SELECT id, name FROM public.sectors ORDER BY position ASC, created_at ASC;"),
+    client.query(`
+      SELECT e.id,
+             e.name,
+             COALESCE(
+               ARRAY_AGG(es.sector_id) FILTER (WHERE es.sector_id IS NOT NULL),
+               ARRAY[e.sector_id]
+             ) AS sector_ids
+      FROM public.employees e
+      LEFT JOIN public.employee_sectors es ON es.employee_id = e.id
+      GROUP BY e.id, e.name, e.created_at, e.sector_id
+      ORDER BY e.created_at ASC;
+    `),
+    client.query(
+      "SELECT id, number, name, status, created_at, opened_at, finished_at FROM public.production_orders ORDER BY created_at DESC;"
+    ),
+    client.query(
+      "SELECT id, order_id, quantity, unit, description FROM public.production_items ORDER BY created_at ASC;"
+    ),
+    client.query(
+      "SELECT id, item_id, sector_id, employee_id, status, released_at, started_at, finished_at, useful_minutes FROM public.item_operations ORDER BY created_at ASC;"
+    ),
+    client.query(
+      `
+      SELECT n.id,
+             n.action,
+             n.item_id,
+             n.created_at,
+             u.email AS actor_email,
+             po.number AS order_number,
+             pi.description AS item_description,
+             pi.quantity,
+             pi.unit,
+             s.name AS sector_name,
+             e.name AS employee_name
+      FROM public.operation_notifications n
+      JOIN public.app_users u ON u.id = n.actor_user_id
+      JOIN public.production_orders po ON po.id = n.order_id
+      JOIN public.production_items pi ON pi.id = n.item_id
+      JOIN public.sectors s ON s.id = n.sector_id
+      LEFT JOIN public.employees e ON e.id = n.employee_id
+      ORDER BY n.created_at DESC
+      LIMIT 80;
+      `
+    )
+  ]);
+
+  const scheduleRow = scheduleRs.rows[0];
+  const schedule = scheduleRow
+    ? mapSchedule(scheduleRow)
+    : {
+        workStart: "08:00",
+        workEnd: "18:00",
+        lunchStart: "12:00",
+        lunchEnd: "13:00"
+      };
+
+  const sectors = sectorsRs.rows.map((row) => ({
+    id: row.id,
+    name: row.name
+  }));
+
+  const employees = employeesRs.rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    sectorIds: row.sector_ids || []
+  }));
+
+  const operationsByItem = operationsRs.rows.reduce((acc, row) => {
+    const existing = acc.get(row.item_id) || [];
+    existing.push({
+      sectorId: row.sector_id,
+      employeeId: row.employee_id || undefined,
+      status: row.status,
+      releasedAt: row.released_at.toISOString(),
+      startedAt: row.started_at ? row.started_at.toISOString() : undefined,
+      finishedAt: row.finished_at ? row.finished_at.toISOString() : undefined,
+      usefulMinutes: typeof row.useful_minutes === "number" ? row.useful_minutes : undefined
+    });
+    acc.set(row.item_id, existing);
+    return acc;
+  }, new Map());
+
+  const itemsByOrder = itemsRs.rows.reduce((acc, row) => {
+    const existing = acc.get(row.order_id) || [];
+    existing.push({
+      id: row.id,
+      quantity: Number(row.quantity),
+      unit: row.unit,
+      description: row.description,
+      operations: operationsByItem.get(row.id) || []
+    });
+    acc.set(row.order_id, existing);
+    return acc;
+  }, new Map());
+
+  const orders = ordersRs.rows.map((row) => ({
+    id: row.id,
+    number: row.number,
+    name: row.name,
+    status: row.status,
+    createdAt: row.created_at.toISOString(),
+    openedAt: row.opened_at.toISOString(),
+    finishedAt: row.finished_at ? row.finished_at.toISOString() : undefined,
+    items: itemsByOrder.get(row.id) || []
+  }));
+
+  const notifications = notificationsRs.rows.map((row) => ({
+    id: row.id,
+    action: row.action,
+    actorEmail: row.actor_email,
+    orderNumber: row.order_number,
+    itemId: row.item_id,
+    itemDescription: row.item_description,
+    quantity: Number(row.quantity),
+    unit: row.unit,
+    sectorName: row.sector_name,
+    employeeName: row.employee_name || undefined,
+    createdAt: row.created_at.toISOString()
+  }));
+
+  return { schedule, sectors, employees, orders, notifications };
+}
+
+app.get("/health", async (_req, res) => {
+  try {
+    const result = await pool.query("SELECT NOW() AS now;");
+    res.json({ ok: true, now: result.rows[0].now });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error.message });
+  }
+});
+
+app.get("/events", (req, res) => {
+  const token = String(req.query?.token ?? "");
+  if (!token) {
+    res.status(401).json({ message: "Token ausente." });
+    return;
+  }
+
+  try {
+    jwt.verify(token, jwtSecret);
+  } catch (_error) {
+    res.status(401).json({ message: "Token invalido." });
+    return;
+  }
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+  res.write(`event: connected\ndata: {"ok":true}\n\n`);
+
+  sseClients.add(res);
+
+  const keepAlive = setInterval(() => {
+    res.write(`event: ping\ndata: {"at":"${new Date().toISOString()}"}\n\n`);
+  }, 25000);
+
+  req.on("close", () => {
+    clearInterval(keepAlive);
+    sseClients.delete(res);
+    res.end();
+  });
+});
+
+app.post("/auth/login", async (req, res) => {
+  const email = String(req.body?.email ?? "").trim().toLowerCase();
+  const password = String(req.body?.password ?? "");
+
+  if (!email || !password) {
+    res.status(400).json({ message: "Informe email e senha." });
+    return;
+  }
+
+  try {
+    const result = await pool.query(
+      "SELECT id, email, role, is_active, password_hash FROM public.app_users WHERE email = $1 LIMIT 1;",
+      [email]
+    );
+    const user = result.rows[0];
+    if (!user || !user.is_active) {
+      res.status(401).json({ message: "Credenciais invalidas." });
+      return;
+    }
+
+    const ok = await bcrypt.compare(password, user.password_hash);
+    if (!ok) {
+      res.status(401).json({ message: "Credenciais invalidas." });
+      return;
+    }
+
+    const token = signAccessToken(user);
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.get("/auth/me", requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT id, email, role, is_active FROM public.app_users WHERE id = $1 LIMIT 1;",
+      [req.auth.sub]
+    );
+    const user = result.rows[0];
+    if (!user || !user.is_active) {
+      res.status(401).json({ message: "Sessao invalida." });
+      return;
+    }
+    res.json({
+      id: user.id,
+      email: user.email,
+      role: user.role
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+app.get("/bootstrap", requireAuth, async (_req, res) => {
+  const client = await pool.connect();
+  try {
+    const snapshot = await loadSnapshot(client);
+    res.json(snapshot);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/schedule", requireAuth, requireAdmin, async (req, res) => {
+  const { workStart, workEnd, lunchStart, lunchEnd } = req.body ?? {};
+  if (!workStart || !workEnd || !lunchStart || !lunchEnd) {
+    res.status(400).json({ message: "Horario invalido." });
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const existing = await client.query("SELECT id FROM public.work_schedules ORDER BY created_at ASC LIMIT 1;");
+    if (existing.rows[0]) {
+      await client.query(
+        "UPDATE public.work_schedules SET work_start=$1, work_end=$2, lunch_start=$3, lunch_end=$4, updated_at=NOW() WHERE id=$5;",
+        [workStart, workEnd, lunchStart, lunchEnd, existing.rows[0].id]
+      );
+    } else {
+      await client.query(
+        "INSERT INTO public.work_schedules (work_start, work_end, lunch_start, lunch_end) VALUES ($1, $2, $3, $4);",
+        [workStart, workEnd, lunchStart, lunchEnd]
+      );
+    }
+    await client.query("COMMIT");
+    broadcastRefresh();
+    const snapshot = await loadSnapshot(client);
+    res.json(snapshot);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/sectors", requireAuth, requireAdmin, async (req, res) => {
+  const { name } = req.body ?? {};
+  if (!name || !String(name).trim()) {
+    res.status(400).json({ message: "Nome do setor e obrigatorio." });
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const positionRs = await client.query("SELECT COALESCE(MAX(position), 0) + 1 AS next_position FROM public.sectors;");
+    await client.query("INSERT INTO public.sectors (name, position) VALUES ($1, $2);", [
+      String(name).trim(),
+      Number(positionRs.rows[0].next_position)
+    ]);
+    await client.query("COMMIT");
+    broadcastRefresh();
+    const snapshot = await loadSnapshot(client);
+    res.json(snapshot);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/employees", requireAuth, requireAdmin, async (req, res) => {
+  const { name, sectorId, sectorIds } = req.body ?? {};
+  const parsedSectorIds = Array.isArray(sectorIds)
+    ? sectorIds.map((value) => String(value).trim()).filter(Boolean)
+    : sectorId
+      ? [String(sectorId).trim()]
+      : [];
+
+  if (!name || !String(name).trim() || parsedSectorIds.length === 0) {
+    res.status(400).json({ message: "Funcionario invalido." });
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    const uniqueSectorIds = [...new Set(parsedSectorIds)];
+    await client.query("BEGIN");
+    const employeeRs = await client.query(
+      "INSERT INTO public.employees (name, sector_id) VALUES ($1, $2) RETURNING id;",
+      [String(name).trim(), uniqueSectorIds[0]]
+    );
+    const employeeId = employeeRs.rows[0].id;
+    for (const linkedSectorId of uniqueSectorIds) {
+      await client.query(
+        "INSERT INTO public.employee_sectors (employee_id, sector_id) VALUES ($1, $2) ON CONFLICT (employee_id, sector_id) DO NOTHING;",
+        [employeeId, linkedSectorId]
+      );
+    }
+    await client.query("COMMIT");
+    broadcastRefresh();
+    const snapshot = await loadSnapshot(client);
+    res.json(snapshot);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.put("/employees/:employeeId", requireAuth, requireAdmin, async (req, res) => {
+  const { employeeId } = req.params;
+  const { name, sectorIds } = req.body ?? {};
+  const parsedSectorIds = Array.isArray(sectorIds)
+    ? sectorIds.map((value) => String(value).trim()).filter(Boolean)
+    : [];
+
+  if (!name || !String(name).trim() || parsedSectorIds.length === 0) {
+    res.status(400).json({ message: "Dados invalidos para atualizar funcionario." });
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    const uniqueSectorIds = [...new Set(parsedSectorIds)];
+    await client.query("BEGIN");
+    const updateRs = await client.query(
+      "UPDATE public.employees SET name=$1, sector_id=$2 WHERE id=$3 RETURNING id;",
+      [String(name).trim(), uniqueSectorIds[0], employeeId]
+    );
+
+    if (!updateRs.rows[0]) {
+      await client.query("ROLLBACK");
+      res.status(404).json({ message: "Funcionario nao encontrado." });
+      return;
+    }
+
+    await client.query("DELETE FROM public.employee_sectors WHERE employee_id=$1;", [employeeId]);
+    for (const linkedSectorId of uniqueSectorIds) {
+      await client.query(
+        "INSERT INTO public.employee_sectors (employee_id, sector_id) VALUES ($1, $2) ON CONFLICT (employee_id, sector_id) DO NOTHING;",
+        [employeeId, linkedSectorId]
+      );
+    }
+
+    await client.query("COMMIT");
+    broadcastRefresh();
+    const snapshot = await loadSnapshot(client);
+    res.json(snapshot);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.delete("/employees/:employeeId", requireAuth, requireAdmin, async (req, res) => {
+  const { employeeId } = req.params;
+  const client = await pool.connect();
+  try {
+    await client.query("DELETE FROM public.employees WHERE id=$1;", [employeeId]);
+    broadcastRefresh();
+    const snapshot = await loadSnapshot(client);
+    res.json(snapshot);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/orders/import", requireAuth, requireAdmin, async (req, res) => {
+  const { number, name, rows } = req.body ?? {};
+  if (!number || !Array.isArray(rows) || rows.length === 0) {
+    res.status(400).json({ message: "Payload de importacao invalido." });
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const now = new Date();
+    const sectorsRs = await client.query("SELECT id FROM public.sectors ORDER BY position ASC, created_at ASC;");
+    if (sectorsRs.rows.length === 0) {
+      throw new Error("Cadastre ao menos um setor antes de criar OP.");
+    }
+
+    const orderRs = await client.query(
+      "INSERT INTO public.production_orders (number, name, status, created_at, opened_at) VALUES ($1, $2, 'ABERTA', $3, $3) RETURNING id;",
+      [String(number).trim(), String(name || number).trim(), now]
+    );
+
+    const orderId = orderRs.rows[0].id;
+
+    for (const row of rows) {
+      const quantity = Number(row.quantity ?? 0);
+      const unit = String(row.unit ?? "UN").trim() || "UN";
+      const description = String(row.description ?? "").trim();
+      if (!description || quantity <= 0) {
+        continue;
+      }
+
+      const itemRs = await client.query(
+        "INSERT INTO public.production_items (order_id, quantity, unit, description) VALUES ($1, $2, $3, $4) RETURNING id;",
+        [orderId, quantity, unit, description]
+      );
+      const itemId = itemRs.rows[0].id;
+
+      for (const sector of sectorsRs.rows) {
+        await client.query(
+          "INSERT INTO public.item_operations (item_id, sector_id, status, released_at) VALUES ($1, $2, 'PENDENTE', $3);",
+          [itemId, sector.id, now]
+        );
+      }
+    }
+
+    await client.query("COMMIT");
+    broadcastRefresh();
+    const snapshot = await loadSnapshot(client);
+    res.json(snapshot);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/orders/:orderId/finalize", requireAuth, requireAdmin, async (req, res) => {
+  const { orderId } = req.params;
+  const client = await pool.connect();
+  try {
+    await client.query("UPDATE public.production_orders SET status='FINALIZADA', finished_at=COALESCE(finished_at, NOW()) WHERE id=$1;", [
+      orderId
+    ]);
+    broadcastRefresh();
+    const snapshot = await loadSnapshot(client);
+    res.json(snapshot);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.delete("/orders/:orderId", requireAuth, requireAdmin, async (req, res) => {
+  const { orderId } = req.params;
+  const client = await pool.connect();
+  try {
+    await client.query("DELETE FROM public.production_orders WHERE id=$1;", [orderId]);
+    broadcastRefresh();
+    const snapshot = await loadSnapshot(client);
+    res.json(snapshot);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/operations/toggle", requireAuth, async (req, res) => {
+  const { itemId, sectorId, employeeId, done } = req.body ?? {};
+  if (!itemId || !sectorId || typeof done !== "boolean") {
+    res.status(400).json({ message: "Payload de operacao invalido." });
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const operationRs = await client.query(
+      `
+      SELECT io.id,
+             io.released_at,
+             io.started_at,
+             io.employee_id AS previous_employee_id,
+             s.position AS sector_position,
+             pi.id AS item_id,
+             pi.order_id,
+             s.id AS sector_id
+      FROM public.item_operations io
+      JOIN public.production_items pi ON pi.id = io.item_id
+      JOIN public.sectors s ON s.id = io.sector_id
+      WHERE io.item_id=$1 AND io.sector_id=$2
+      LIMIT 1;
+      `,
+      [itemId, sectorId]
+    );
+    const operation = operationRs.rows[0];
+    if (!operation) {
+      throw new Error("Operacao nao encontrada.");
+    }
+
+    let notificationEmployeeId = null;
+    let notificationAction = "UNCONFIRM_OPERATION";
+
+    if (!done) {
+      await client.query(
+        "UPDATE public.item_operations SET employee_id=NULL, status='PENDENTE', started_at=NULL, finished_at=NULL, useful_minutes=NULL WHERE id=$1;",
+        [operation.id]
+      );
+      notificationEmployeeId = operation.previous_employee_id || null;
+      notificationAction = "UNCONFIRM_OPERATION";
+    } else {
+      if (!employeeId) {
+        throw new Error("Selecione um funcionario.");
+      }
+      const now = new Date().toISOString();
+      const scheduleRs = await client.query(
+        "SELECT work_start, work_end, lunch_start, lunch_end FROM public.work_schedules ORDER BY created_at ASC LIMIT 1;"
+      );
+      const schedule = mapSchedule(scheduleRs.rows[0]);
+      const previousSectorRs = await client.query(
+        `
+        SELECT io.finished_at
+        FROM public.item_operations io
+        JOIN public.sectors s ON s.id = io.sector_id
+        WHERE io.item_id = $1
+          AND s.position < $2
+          AND io.finished_at IS NOT NULL
+        ORDER BY s.position DESC
+        LIMIT 1;
+        `,
+        [operation.item_id, operation.sector_position]
+      );
+
+      const previousFinishedAt = previousSectorRs.rows[0]?.finished_at
+        ? previousSectorRs.rows[0].finished_at.toISOString()
+        : undefined;
+
+      const startedAt = operation.started_at
+        ? operation.started_at.toISOString()
+        : previousFinishedAt || operation.released_at.toISOString();
+      const usefulMinutes = calculateUsefulMinutes(startedAt, now, schedule);
+      await client.query(
+        "UPDATE public.item_operations SET employee_id=$1, status='CONCLUIDA', started_at=COALESCE(started_at, $2::timestamptz), finished_at=$3, useful_minutes=$4 WHERE id=$5;",
+        [employeeId, startedAt, now, usefulMinutes, operation.id]
+      );
+
+      const nextOperationRs = await client.query(
+        `
+        SELECT io.id
+        FROM public.item_operations io
+        JOIN public.sectors s ON s.id = io.sector_id
+        WHERE io.item_id = $1
+          AND s.position > $2
+          AND io.status = 'PENDENTE'
+        ORDER BY s.position ASC
+        LIMIT 1;
+        `,
+        [operation.item_id, operation.sector_position]
+      );
+
+      if (nextOperationRs.rows[0]) {
+        await client.query("UPDATE public.item_operations SET released_at = $1 WHERE id = $2;", [
+          now,
+          nextOperationRs.rows[0].id
+        ]);
+      }
+      notificationEmployeeId = employeeId;
+      notificationAction = "CONFIRM_OPERATION";
+    }
+
+    await client.query(
+      `
+      INSERT INTO public.operation_notifications (action, actor_user_id, order_id, item_id, sector_id, employee_id)
+      VALUES ($1, $2, $3, $4, $5, $6);
+      `,
+      [notificationAction, req.auth.sub, operation.order_id, operation.item_id, operation.sector_id, notificationEmployeeId]
+    );
+
+    const orderStatusRs = await client.query(
+      `
+      SELECT po.id AS order_id,
+             CASE
+               WHEN BOOL_AND(io.status = 'CONCLUIDA') THEN 'FINALIZADA'
+               ELSE 'ABERTA'
+             END AS next_status
+      FROM public.production_orders po
+      JOIN public.production_items pi ON pi.order_id = po.id
+      JOIN public.item_operations io ON io.item_id = pi.id
+      WHERE pi.id = $1
+      GROUP BY po.id;
+      `,
+      [itemId]
+    );
+
+    if (orderStatusRs.rows[0]) {
+      const orderId = orderStatusRs.rows[0].order_id;
+      const nextStatus = orderStatusRs.rows[0].next_status;
+      await client.query(
+        "UPDATE public.production_orders SET status=$1::order_status, finished_at=CASE WHEN $1::order_status='FINALIZADA'::order_status THEN COALESCE(finished_at, NOW()) ELSE NULL END WHERE id=$2;",
+        [nextStatus, orderId]
+      );
+    }
+
+    await client.query("COMMIT");
+    broadcastRefresh();
+    const snapshot = await loadSnapshot(client);
+    res.json(snapshot);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.listen(port, () => {
+  console.log(`TrackLine API online em http://localhost:${port}`);
+});
