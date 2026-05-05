@@ -42,6 +42,7 @@ const nativePlatform =
     : undefined;
 
 const looksLikeLocalhost = (value?: string) => !!value && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i.test(value);
+const normalizeBaseUrl = (value: string) => value.replace(/\/+$/, "");
 
 let baseUrl = desktopApiBaseUrl || envApiUrl || "http://localhost:8787";
 
@@ -50,6 +51,8 @@ if (isNativePlatform && nativePlatform === "android" && looksLikeLocalhost(baseU
   // Use 10.0.2.2 to reach the host machine API when no remote URL is configured.
   baseUrl = envAndroidApiUrl || "http://10.0.2.2:8787";
 }
+
+baseUrl = normalizeBaseUrl(baseUrl);
 
 export const getStoredToken = () =>
   localStorage.getItem(AUTH_TOKEN_KEY) ?? sessionStorage.getItem(AUTH_TOKEN_SESSION_KEY) ?? undefined;

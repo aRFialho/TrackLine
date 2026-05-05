@@ -5,6 +5,7 @@
   "main": "electron/main.cjs",
   "description": "TrackLine - Controle de producao com build para EXE e APK",
   "scripts": {
+    "start": "node server/index.cjs",
     "dev": "concurrently \"npm run dev:api\" \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "dev:api": "node server/index.cjs",
     "dev:web": "vite",

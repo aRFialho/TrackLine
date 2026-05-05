@@ -1,6 +1,7 @@
 const { contextBridge } = require("electron");
 
 const API_PORT_PREFIX = "--trackline-api-port=";
+const API_URL_PREFIX = "--trackline-api-url=";
 
 function resolveApiPort() {
   const arg = process.argv.find((value) => value.startsWith(API_PORT_PREFIX));
@@ -17,8 +18,10 @@ function resolveApiPort() {
 }
 
 const apiPort = resolveApiPort();
+const apiUrlArg = process.argv.find((value) => value.startsWith(API_URL_PREFIX));
+const explicitApiUrl = apiUrlArg ? apiUrlArg.slice(API_URL_PREFIX.length).trim() : "";
 
 contextBridge.exposeInMainWorld("trackline", {
   platform: "desktop",
-  apiBaseUrl: `http://127.0.0.1:${apiPort}`
+  apiBaseUrl: explicitApiUrl || `http://127.0.0.1:${apiPort}`
 });

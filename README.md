@@ -50,18 +50,17 @@ npm run desktop:build
 
 Instalador em `release/`.
 
-## 4.1) Gerar instalador leve (.iss + payload externo)
+## 4.1) Gerar instalador `.iss` unico (sem ZIP externo)
 
 ```bash
 npm run installer:build
 ```
 
-Saida em `release/installer/` com 2 arquivos:
+Saida em `release/installer/`:
 
 - `TrackLine-Setup-<versao>.exe`
-- `TrackLine-payload.zip`
 
-Distribua **os dois juntos na mesma pasta**. O setup descompacta o payload durante a instalacao.
+Este `.exe` ja contem os arquivos necessarios para instalar em outros computadores.
 
 ## 5) Gerar APK (Android)
 
@@ -94,15 +93,16 @@ No Android Studio, use **Build > Build APK(s)**.
 
 - `DATABASE_URL`: conexao PostgreSQL
 - `API_PORT`: porta da API (padrao `8787`)
-- `VITE_API_URL`: URL base usada pelo frontend (padrao `http://localhost:8787`)
-- `VITE_ANDROID_API_URL`: URL da API para Android nativo (padrao `http://10.0.2.2:8787` no emulador)
+- `VITE_API_URL`: URL base usada pelo frontend (padrao `https://trackline-x8kb.onrender.com`)
+- `VITE_ANDROID_API_URL`: URL da API para Android nativo (padrao `https://trackline-x8kb.onrender.com`)
+- `TRACKLINE_REMOTE_API_URL`: URL remota usada pelo app desktop empacotado
 - `JWT_SECRET`: segredo do token de autenticacao
 - `ADMIN_EMAIL` e `ADMIN_PASSWORD`: opcionais para seed do admin
 
 Observacao Android:
 
-- Em emulador Android, `localhost` do app aponta para o proprio emulador. Use `10.0.2.2` para acessar a API no host.
-- Em celular fisico, configure `VITE_ANDROID_API_URL` com URL HTTPS publica da sua API.
+- Com API hospedada, mantenha `VITE_ANDROID_API_URL` em URL HTTPS publica.
+- `10.0.2.2` so e necessario quando a API estiver rodando localmente no host.
 
 ## 8) Login padrao (admin)
 
