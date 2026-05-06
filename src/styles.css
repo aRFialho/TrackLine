@@ -543,6 +543,15 @@ small {
   border: 1px solid #cbd5e1;
 }
 
+.order-items-wrap {
+  max-height: min(72vh, 760px);
+  overflow: auto;
+}
+
+.item-complete-row td {
+  background: #d1d5db;
+}
+
 hr {
   border: 0;
   border-top: 1px solid var(--surface-2);

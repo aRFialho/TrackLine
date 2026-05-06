@@ -152,7 +152,12 @@ const calculateUsefulMinutes = (startIso, endIso, schedule) => {
 };
 
 const parsePositiveNumber = (value) => {
-  const parsed = Number(value);
+  const normalizedValue = String(value ?? "")
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/\.(?=\d{3}(\D|$))/g, "")
+    .replace(",", ".");
+  const parsed = Number(normalizedValue);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return undefined;
   }
@@ -997,12 +1002,12 @@ app.post("/operations/toggle", requireAuth, async (req, res) => {
         throw new Error("Informe uma quantidade valida para retorno.");
       }
 
-      const { releasedQuantity, completedQuantity, availableQuantity } = readOperationQuantities(operation);
-      if (availableQuantity <= quantityEpsilon) {
+      const { releasedQuantity, completedQuantity } = readOperationQuantities(operation);
+      if (releasedQuantity <= quantityEpsilon) {
         throw new Error("Nao ha quantidade liberada para retornar ao setor anterior.");
       }
-      if (rollbackQuantity > availableQuantity + quantityEpsilon) {
-        throw new Error(`Quantidade de retorno maior que a liberada (${availableQuantity}).`);
+      if (rollbackQuantity > releasedQuantity + quantityEpsilon) {
+        throw new Error(`Quantidade de retorno maior que a liberada (${releasedQuantity}).`);
       }
 
       const previousOperationRs = await client.query(
@@ -1032,25 +1037,24 @@ app.post("/operations/toggle", requireAuth, async (req, res) => {
       }
 
       const nextReleasedQuantity = Math.max(0, releasedQuantity - rollbackQuantity);
-      if (nextReleasedQuantity + quantityEpsilon < completedQuantity) {
-        throw new Error(
-          "Quantidade de retorno invalida: a quantidade ja baixada no setor atual excede a nova liberacao."
-        );
-      }
-      const currentIsDone = completedQuantity >= nextReleasedQuantity - quantityEpsilon;
+      const nextCompletedQuantity = Math.min(completedQuantity, nextReleasedQuantity);
+      const currentIsDone =
+        nextReleasedQuantity > quantityEpsilon && nextCompletedQuantity >= nextReleasedQuantity - quantityEpsilon;
 
       await client.query(
         `UPDATE public.item_operations
          SET status=$1::operation_status,
              finished_at=$2,
              useful_minutes=$3,
-             released_quantity=$4
-         WHERE id=$5;`,
+             released_quantity=$4,
+             completed_quantity=$5
+         WHERE id=$6;`,
         [
           currentIsDone ? "CONCLUIDA" : "PENDENTE",
           currentIsDone ? operation.finished_at : null,
           currentIsDone ? operation.useful_minutes : null,
           nextReleasedQuantity,
+          nextCompletedQuantity,
           operation.id
         ]
       );

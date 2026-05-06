@@ -10,6 +10,13 @@ function OrderDetailPage() {
   const [selectedOperators, setSelectedOperators] = useState<Record<string, string>>({});
   const [cellErrors, setCellErrors] = useState<Record<string, string>>({});
   const [runningBatchKey, setRunningBatchKey] = useState<string>("");
+  const [itemQuery, setItemQuery] = useState("");
+
+  const parseInputQuantity = (raw: string) => {
+    const normalized = raw.trim().replace(/\s+/g, "").replace(/\.(?=\d{3}(\D|$))/g, "").replace(",", ".");
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : NaN;
+  };
 
   const order = useMemo(() => orders.find((candidate) => candidate.id === orderId), [orders, orderId]);
   const employeesBySector = useMemo(
@@ -40,6 +47,14 @@ function OrderDetailPage() {
     );
   }
 
+  const filteredItems = order.items.filter((item) => {
+    const q = itemQuery.trim().toLowerCase();
+    if (!q) {
+      return true;
+    }
+    return item.description.toLowerCase().includes(q);
+  });
+
   return (
     <section className="page">
       <header className="page-title">
@@ -60,8 +75,16 @@ function OrderDetailPage() {
       </header>
 
       <div className="card">
-        <div className="table-wrap">
-          <table>
+        <div className="section-head">
+          <h2>Itens da OP</h2>
+          <input
+            value={itemQuery}
+            onChange={(event) => setItemQuery(event.target.value)}
+            placeholder="Buscar item por descricao"
+          />
+        </div>
+        <div className="table-wrap order-items-wrap">
+          <table className="order-items-table">
             <thead>
               <tr>
                 <th>QTDE</th>
@@ -73,8 +96,14 @@ function OrderDetailPage() {
               </tr>
             </thead>
             <tbody>
-              {order.items.map((item) => (
-                <tr key={item.id}>
+              {filteredItems.map((item) => {
+                const itemCompleted = item.operations.every(
+                  (op) =>
+                    op.status === "CONCLUIDA" &&
+                    Number(op.completedQuantity || 0) >= Number(op.releasedQuantity || 0) - 0.00001
+                );
+                return (
+                <tr key={item.id} className={itemCompleted ? "item-complete-row" : ""}>
                   <td>{item.quantity}</td>
                   <td>{item.unit}</td>
                   <td>{item.description}</td>
@@ -96,10 +125,7 @@ function OrderDetailPage() {
                     const availableEmployees = employeesBySector[sector.id] ?? [];
                     const cellKey = `${item.id}-${sector.id}`;
                     const selectedEmployeeId = selectedOperators[cellKey] ?? operation.employeeId ?? "";
-                    const rollbackAvailableQuantity = Math.max(
-                      0,
-                      Number(operation.releasedQuantity || 0) - Number(operation.completedQuantity || 0)
-                    );
+                    const rollbackAvailableQuantity = Math.max(0, Number(operation.releasedQuantity || 0));
                     const hasPreviousSector = (sectorPositionById[sector.id] ?? 0) > 0;
 
                     return (
@@ -128,6 +154,7 @@ function OrderDetailPage() {
                           <button
                             className="mini-btn"
                             disabled={!selectedEmployeeId || availableQuantity <= 0}
+                            type="button"
                             onClick={() => {
                               setRunningBatchKey(`${cellKey}-single`);
                               void batchSetOperations({
@@ -144,6 +171,7 @@ function OrderDetailPage() {
                           <button
                             className="mini-btn ghost"
                             disabled={!selectedEmployeeId || lotAvailableQuantity <= 0}
+                            type="button"
                             onClick={() => {
                               const raw = window.prompt(
                                 `Quantidade para baixa por lote "${item.description}" (max ${lotAvailableQuantity}):`,
@@ -152,7 +180,7 @@ function OrderDetailPage() {
                               if (!raw) {
                                 return;
                               }
-                              const nextQty = Number(raw);
+                              const nextQty = parseInputQuantity(raw);
                               if (!Number.isFinite(nextQty) || nextQty <= 0) {
                                 setCellErrors((current) => ({
                                   ...current,
@@ -183,6 +211,7 @@ function OrderDetailPage() {
                           <button
                             className="mini-btn ghost"
                             disabled={!hasPreviousSector || rollbackAvailableQuantity <= 0}
+                            type="button"
                             onClick={() => {
                               const qtyRaw = window.prompt(
                                 `Quantidade para retornar ao setor anterior (max ${rollbackAvailableQuantity}):`,
@@ -191,7 +220,7 @@ function OrderDetailPage() {
                               if (!qtyRaw) {
                                 return;
                               }
-                              const rollbackQuantity = Number(qtyRaw);
+                              const rollbackQuantity = parseInputQuantity(qtyRaw);
                               if (!Number.isFinite(rollbackQuantity) || rollbackQuantity <= 0) {
                                 setCellErrors((current) => ({
                                   ...current,
@@ -236,7 +265,12 @@ function OrderDetailPage() {
                     );
                   })}
                 </tr>
-              ))}
+              )})}
+              {filteredItems.length === 0 ? (
+                <tr>
+                  <td colSpan={3 + sectors.length}>Nenhum item encontrado para o filtro informado.</td>
+                </tr>
+              ) : null}
             </tbody>
           </table>
         </div>

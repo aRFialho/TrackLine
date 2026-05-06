@@ -1,7 +1,7 @@
 import { FormEvent, useMemo, useState } from "react";
 import dayjs from "dayjs";
 import { useNavigate } from "react-router-dom";
-import { parseOrderSpreadsheet } from "../lib/importers";
+import { parseOrderFile } from "../lib/importers";
 import { useProductionStore } from "../store/useProductionStore";
 import { useAuthStore } from "../store/useAuthStore";
 
@@ -84,15 +84,15 @@ function OrdersPage() {
       return;
     }
     if (!file) {
-      setError("Anexe uma planilha .xlsx ou .csv.");
+      setError("Anexe um arquivo .xlsx, .csv ou .pdf.");
       return;
     }
 
     setLoading(true);
     try {
-      const rows = await parseOrderSpreadsheet(file);
+      const rows = await parseOrderFile(file);
       if (rows.length === 0) {
-        setError("A planilha nao possui linhas validas.");
+        setError("O arquivo nao possui linhas validas.");
         return;
       }
       await createOrder({ number, name, rows });
@@ -114,7 +114,7 @@ function OrdersPage() {
     <section className="page">
       <header className="page-title">
         <h1>Ordens de Producao</h1>
-        <p>Importe planilha, acompanhe etapas e finalize quando todo setor concluir.</p>
+        <p>Importe planilha ou PDF, acompanhe etapas e finalize quando todo setor concluir.</p>
       </header>
 
       {isAdmin ? (
@@ -130,11 +130,11 @@ function OrdersPage() {
               <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Ex: Sofa Linha Prime" />
             </label>
             <label className="full">
-              Planilha
+              Planilha / PDF
               <input
                 id="op-file-input"
                 type="file"
-                accept=".xlsx,.xls,.csv"
+                accept=".xlsx,.xls,.csv,.pdf"
                 onChange={(event) => setFile(event.target.files?.[0] ?? null)}
               />
             </label>

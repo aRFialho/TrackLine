@@ -127,13 +127,14 @@ const applyOptimisticOperationChange = (state: StoreState, payload: {
         return nextOrders;
       }
       const previousOperation = item.operations[currentIndex - 1];
-      const rollbackAvailable = Math.max(0, currentOperation.releasedQuantity - currentOperation.completedQuantity);
+      const rollbackAvailable = Math.max(0, currentOperation.releasedQuantity);
       const rollbackQuantity = Math.max(0, Math.min(rollbackAvailable, payload.requestedQuantity ?? rollbackAvailable));
       if (rollbackQuantity <= qtyEpsilon) {
         return nextOrders;
       }
 
       currentOperation.releasedQuantity = Math.max(0, currentOperation.releasedQuantity - rollbackQuantity);
+      currentOperation.completedQuantity = Math.min(currentOperation.completedQuantity, currentOperation.releasedQuantity);
       const currentIsDone = currentOperation.completedQuantity >= currentOperation.releasedQuantity - qtyEpsilon;
       currentOperation.status = currentIsDone ? "CONCLUIDA" : "PENDENTE";
       if (!currentIsDone) {
