@@ -575,6 +575,30 @@ small {
   margin-bottom: 12px;
 }
 
+.update-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(15, 23, 42, 0.5);
+  display: grid;
+  place-items: center;
+  padding: 14px;
+}
+
+.update-modal {
+  width: min(560px, 100%);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 20px 45px rgba(15, 23, 42, 0.25);
+  padding: 16px;
+}
+
+.update-modal h2 {
+  margin-top: 0;
+  margin-bottom: 8px;
+}
+
 hr {
   border: 0;
   border-top: 1px solid var(--surface-2);

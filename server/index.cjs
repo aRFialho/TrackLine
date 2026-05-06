@@ -24,6 +24,19 @@ if (envPath) {
 const app = express();
 const port = Number(process.env.API_PORT || 8787);
 const jwtSecret = process.env.JWT_SECRET || "trackline-dev-secret";
+const packageJsonPath = path.resolve(__dirname, "..", "package.json");
+const appPackageVersion = (() => {
+  try {
+    const raw = fs.readFileSync(packageJsonPath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.version === "string" && parsed.version.trim()) {
+      return parsed.version.trim();
+    }
+  } catch (_error) {
+    // ignore and use fallback
+  }
+  return "0.0.0";
+})();
 
 app.use(cors());
 app.use(express.json({ limit: "4mb" }));
@@ -664,6 +677,30 @@ app.post("/sectors", requireAuth, requireAdmin, async (req, res) => {
   } finally {
     client.release();
   }
+});
+
+app.get("/app-update", (_req, res) => {
+  const latestVersion = String(process.env.APP_LATEST_VERSION || appPackageVersion || "0.0.0").trim();
+  const minimumSupportedVersion = String(process.env.APP_MIN_SUPPORTED_VERSION || "").trim() || null;
+  const desktopDownloadUrl = String(process.env.APP_UPDATE_DESKTOP_URL || "").trim() || null;
+  const androidDownloadUrl = String(process.env.APP_UPDATE_ANDROID_URL || "").trim() || null;
+  const notes = String(process.env.APP_UPDATE_NOTES || "").trim() || null;
+  const publishedAtRaw = String(process.env.APP_UPDATE_PUBLISHED_AT || "").trim();
+  const publishedAt = publishedAtRaw || new Date().toISOString();
+
+  res.json({
+    latestVersion,
+    minimumSupportedVersion,
+    forceUpdate: String(process.env.APP_FORCE_UPDATE || "").trim().toLowerCase() === "true",
+    notes,
+    publishedAt,
+    desktop: {
+      downloadUrl: desktopDownloadUrl
+    },
+    android: {
+      downloadUrl: androidDownloadUrl
+    }
+  });
 });
 
 app.put("/sectors/:sectorId", requireAuth, requireAdmin, async (req, res) => {
