@@ -166,6 +166,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name })
     }),
+  updateSector: (sectorId: string, name: string) =>
+    request<BootstrapSnapshot>(`/sectors/${sectorId}`, {
+      method: "PUT",
+      body: JSON.stringify({ name })
+    }),
+  deleteSector: (sectorId: string) =>
+    request<BootstrapSnapshot>(`/sectors/${sectorId}`, {
+      method: "DELETE"
+    }),
   addEmployee: (name: string, sectorIds: string[]) =>
     request<BootstrapSnapshot>("/employees", {
       method: "POST",
@@ -198,7 +207,14 @@ export const api = {
     request<BootstrapSnapshot>(`/orders/${orderId}`, {
       method: "DELETE"
     }),
-  setOperationDone: (payload: { itemId: string; sectorId: string; employeeId: string; done: boolean; reason?: string }) =>
+  setOperationDone: (payload: {
+    itemId: string;
+    sectorId: string;
+    employeeId: string;
+    done: boolean;
+    reason?: string;
+    quantity?: number;
+  }) =>
     request<BootstrapSnapshot>("/operations/toggle", {
       method: "POST",
       body: JSON.stringify(payload)

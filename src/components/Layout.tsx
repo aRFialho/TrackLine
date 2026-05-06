@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import dayjs from "dayjs";
 import { useProductionStore } from "../store/useProductionStore";
 import { useAuthStore } from "../store/useAuthStore";
+import { trackLineLogoUrl } from "../lib/branding";
 
 function Layout() {
   const { bootstrap, initialized, error, notifications } = useProductionStore();
@@ -27,7 +28,7 @@ function Layout() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <img src="/TL.png" alt="TrackLine logo" />
+          <img src={trackLineLogoUrl} alt="TrackLine logo" />
           <div>
             <strong>TrackLine</strong>
             <p>Controle de producao</p>
@@ -64,9 +65,7 @@ function Layout() {
                           ? "retornou operacao de"
                           : "executou baixa em lote de"}{" "}
                     <b>
-                      {notification.action === "BATCH_OPERATION"
-                        ? `${notification.processedQuantity ?? notification.quantity} ${notification.unit}`
-                        : `${notification.quantity} ${notification.unit}`}
+                      {`${notification.processedQuantity ?? notification.quantity} ${notification.unit}`}
                     </b>{" "}
                     de <b>{notification.itemDescription}</b> no setor <b>{notification.sectorName}</b>.
                   </p>

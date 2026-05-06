@@ -189,6 +189,34 @@ body {
   margin: 8px 0;
 }
 
+.admin-page,
+.reports-page {
+  gap: 18px;
+}
+
+.admin-page .grid-two,
+.reports-page .grid-two {
+  gap: 18px;
+  align-items: start;
+}
+
+.admin-page .card,
+.reports-page .card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  max-height: min(72vh, 720px);
+  overflow: auto;
+}
+
+.admin-page .card .table-wrap,
+.reports-page .card .table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
 .form-grid {
   display: grid;
   gap: 10px;
@@ -682,6 +710,12 @@ hr {
 
   .tab-btn {
     white-space: nowrap;
+  }
+
+  .admin-page .card,
+  .reports-page .card {
+    max-height: min(64vh, 580px);
+    padding: 14px;
   }
 }
 

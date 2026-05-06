@@ -2,9 +2,22 @@ import { FormEvent, useEffect, useState } from "react";
 import { useProductionStore } from "../store/useProductionStore";
 
 function AdminPage() {
-  const { schedule, sectors, employees, addSector, reorderSectors, addEmployee, updateEmployee, deleteEmployee, updateSchedule } =
-    useProductionStore();
+  const {
+    schedule,
+    sectors,
+    employees,
+    addSector,
+    updateSector,
+    deleteSector,
+    reorderSectors,
+    addEmployee,
+    updateEmployee,
+    deleteEmployee,
+    updateSchedule
+  } = useProductionStore();
   const [sectorName, setSectorName] = useState("");
+  const [editingSectorId, setEditingSectorId] = useState<string | null>(null);
+  const [editingSectorName, setEditingSectorName] = useState("");
   const [employeeName, setEmployeeName] = useState("");
   const [employeeSectorIds, setEmployeeSectorIds] = useState<string[]>([]);
   const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(null);
@@ -29,6 +42,41 @@ function AdminPage() {
     }
     await addSector(sectorName);
     setSectorName("");
+  };
+
+  const startEditingSector = (sectorId: string) => {
+    const sector = sectors.find((row) => row.id === sectorId);
+    if (!sector) {
+      return;
+    }
+    setEditingSectorId(sectorId);
+    setEditingSectorName(sector.name);
+  };
+
+  const cancelEditingSector = () => {
+    setEditingSectorId(null);
+    setEditingSectorName("");
+  };
+
+  const saveEditingSector = async () => {
+    if (!editingSectorId || !editingSectorName.trim()) {
+      return;
+    }
+    await updateSector(editingSectorId, editingSectorName.trim());
+    cancelEditingSector();
+  };
+
+  const removeSector = async (sectorId: string, sectorNameToDelete: string) => {
+    const confirmed = window.confirm(
+      `Excluir setor "${sectorNameToDelete}"?\n\nNao sera permitido excluir setor que ja esteja em uso.`
+    );
+    if (!confirmed) {
+      return;
+    }
+    await deleteSector(sectorId);
+    if (editingSectorId === sectorId) {
+      cancelEditingSector();
+    }
   };
 
   const submitEmployee = async (event: FormEvent<HTMLFormElement>) => {
@@ -93,7 +141,7 @@ function AdminPage() {
   };
 
   return (
-    <section className="page">
+    <section className="page admin-page">
       <header className="page-title">
         <h1>Admin</h1>
         <p>Configure expediente, setores e funcionarios por setor.</p>
@@ -163,14 +211,42 @@ function AdminPage() {
               }
               return (
                 <div key={sector.id} className="flow-item">
-                  <strong>
-                    {index + 1}. {sector.name}
-                  </strong>
+                  {editingSectorId === sector.id ? (
+                    <strong>{index + 1}. Editando setor</strong>
+                  ) : (
+                    <strong>
+                      {index + 1}. {sector.name}
+                    </strong>
+                  )}
                   <div className="actions">
-                    <button className="mini-btn ghost" onClick={() => moveSector(sector.id, "up")}>
+                    {editingSectorId === sector.id ? (
+                      <>
+                        <input
+                          value={editingSectorName}
+                          onChange={(event) => setEditingSectorName(event.target.value)}
+                          placeholder="Nome do setor"
+                        />
+                        <button className="mini-btn" type="button" onClick={() => void saveEditingSector()}>
+                          Salvar
+                        </button>
+                        <button className="mini-btn ghost" type="button" onClick={cancelEditingSector}>
+                          Cancelar
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button className="mini-btn" type="button" onClick={() => startEditingSector(sector.id)}>
+                          Editar
+                        </button>
+                        <button className="mini-btn danger" type="button" onClick={() => void removeSector(sector.id, sector.name)}>
+                          Excluir
+                        </button>
+                      </>
+                    )}
+                    <button className="mini-btn ghost" type="button" onClick={() => moveSector(sector.id, "up")}>
                       Subir
                     </button>
-                    <button className="mini-btn ghost" onClick={() => moveSector(sector.id, "down")}>
+                    <button className="mini-btn ghost" type="button" onClick={() => moveSector(sector.id, "down")}>
                       Descer
                     </button>
                   </div>

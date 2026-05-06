@@ -24,6 +24,8 @@ type StoreState = {
   resetStore: () => void;
   bootstrap: (options?: { silent?: boolean }) => Promise<void>;
   addSector: (name: string) => Promise<void>;
+  updateSector: (sectorId: string, name: string) => Promise<void>;
+  deleteSector: (sectorId: string) => Promise<void>;
   reorderSectors: (sectorIds: string[]) => Promise<void>;
   addEmployee: (name: string, sectorIds: string[]) => Promise<void>;
   updateEmployee: (employeeId: string, name: string, sectorIds: string[]) => Promise<void>;
@@ -39,6 +41,7 @@ type StoreState = {
     employeeId: string;
     done: boolean;
     reason?: string;
+    quantity?: number;
   }) => Promise<void>;
   batchSetOperations: (payload: {
     orderId: string;
@@ -120,21 +123,32 @@ const applyOptimisticOperationChange = (state: StoreState, payload: {
     const availableQuantity = Math.max(0, currentOperation.releasedQuantity - currentOperation.completedQuantity);
 
     if (!payload.done) {
-      currentOperation.employeeId = undefined;
-      currentOperation.status = "PENDENTE";
-      currentOperation.startedAt = undefined;
-      currentOperation.finishedAt = undefined;
-      currentOperation.usefulMinutes = undefined;
-      currentOperation.completedQuantity = 0;
-      for (let i = currentIndex + 1; i < item.operations.length; i += 1) {
-        item.operations[i].employeeId = undefined;
-        item.operations[i].status = "PENDENTE";
-        item.operations[i].startedAt = undefined;
-        item.operations[i].finishedAt = undefined;
-        item.operations[i].usefulMinutes = undefined;
-        item.operations[i].releasedQuantity = 0;
-        item.operations[i].completedQuantity = 0;
+      if (currentIndex <= 0) {
+        return nextOrders;
       }
+      const previousOperation = item.operations[currentIndex - 1];
+      const rollbackAvailable = Math.max(0, currentOperation.releasedQuantity - currentOperation.completedQuantity);
+      const rollbackQuantity = Math.max(0, Math.min(rollbackAvailable, payload.requestedQuantity ?? rollbackAvailable));
+      if (rollbackQuantity <= qtyEpsilon) {
+        return nextOrders;
+      }
+
+      currentOperation.releasedQuantity = Math.max(0, currentOperation.releasedQuantity - rollbackQuantity);
+      const currentIsDone = currentOperation.completedQuantity >= currentOperation.releasedQuantity - qtyEpsilon;
+      currentOperation.status = currentIsDone ? "CONCLUIDA" : "PENDENTE";
+      if (!currentIsDone) {
+        currentOperation.finishedAt = undefined;
+        currentOperation.usefulMinutes = undefined;
+      }
+
+      previousOperation.completedQuantity = Math.max(0, previousOperation.completedQuantity - rollbackQuantity);
+      const previousIsDone = previousOperation.completedQuantity >= previousOperation.releasedQuantity - qtyEpsilon;
+      previousOperation.status = previousIsDone ? "CONCLUIDA" : "PENDENTE";
+      if (!previousIsDone) {
+        previousOperation.finishedAt = undefined;
+        previousOperation.usefulMinutes = undefined;
+      }
+
       recomputeOrderStatus(order);
       return nextOrders;
     }
@@ -308,6 +322,8 @@ export const useProductionStore = create<StoreState>()((set) => ({
     }
   },
   addSector: async (name) => runMutation(set, () => api.addSector(name)),
+  updateSector: async (sectorId, name) => runMutation(set, () => api.updateSector(sectorId, name)),
+  deleteSector: async (sectorId) => runMutation(set, () => api.deleteSector(sectorId)),
   reorderSectors: async (sectorIds) => runMutation(set, () => api.reorderSectors(sectorIds)),
   addEmployee: async (name, sectorIds) => runMutation(set, () => api.addEmployee(name, sectorIds)),
   updateEmployee: async (employeeId, name, sectorIds) => runMutation(set, () => api.updateEmployee(employeeId, name, sectorIds)),
@@ -316,7 +332,7 @@ export const useProductionStore = create<StoreState>()((set) => ({
   createOrder: async (payload) => runMutation(set, () => api.createOrder(payload)),
   deleteOrder: async (orderId) => runMutation(set, () => api.deleteOrder(orderId)),
   finalizeOrder: async (orderId) => runMutation(set, () => api.finalizeOrder(orderId)),
-  setOperationDone: async ({ itemId, sectorId, employeeId, done, reason }) => {
+  setOperationDone: async ({ itemId, sectorId, employeeId, done, reason, quantity }) => {
     const previousOrders = useProductionStore.getState().orders;
     set((state) => ({
       error: undefined,
@@ -324,13 +340,14 @@ export const useProductionStore = create<StoreState>()((set) => ({
         itemId,
         sectorId,
         employeeId,
-        done
+        done,
+        requestedQuantity: done ? undefined : quantity
       })
     }));
     set({ error: undefined });
     suppressRealtimeUntil = Date.now() + 300;
     try {
-      const snapshot = await api.setOperationDone({ itemId, sectorId, employeeId, done, reason });
+      const snapshot = await api.setOperationDone({ itemId, sectorId, employeeId, done, reason, quantity });
       applySnapshot(set, snapshot);
     } catch (error) {
       set({

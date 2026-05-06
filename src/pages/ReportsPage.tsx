@@ -127,7 +127,7 @@ function ReportsPage() {
   );
 
   return (
-    <section className="page">
+    <section className="page reports-page">
       <header className="page-title">
         <h1>Relatorios</h1>
         <p>Tempos por item/setor, medias por funcionario e diagnostico de retrocessos/baixas.</p>
@@ -294,7 +294,7 @@ function ReportsPage() {
                   <td>{row.actorEmail}</td>
                   <td>
                     {row.rollbackReason
-                      ? `Motivo: ${row.rollbackReason}`
+                      ? `Motivo: ${row.rollbackReason} | retorno: ${row.processedQuantity ?? "-"}`
                       : row.batchMode
                         ? `${row.batchMode} | solicitado: ${row.requestedQuantity ?? "-"} | processado: ${row.processedQuantity ?? "-"}`
                         : "-"}

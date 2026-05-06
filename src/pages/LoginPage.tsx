@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { useAuthStore } from "../store/useAuthStore";
+import { trackLineLogoUrl } from "../lib/branding";
 
 const loadingHints = [
   "Validando credenciais...",
@@ -51,7 +52,7 @@ function LoginPage() {
     <section className="login-screen">
       <div className="login-card">
         <div className={`login-logo-wrap ${loading ? "is-loading" : ""}`}>
-          <img src="/TL.png" alt="TrackLine logo" />
+          <img src={trackLineLogoUrl} alt="TrackLine logo" />
         </div>
         <h1>TrackLine</h1>
         <p>Acesse com sua conta de administrador.</p>

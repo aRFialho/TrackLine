@@ -627,6 +627,96 @@ app.post("/sectors", requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
+app.put("/sectors/:sectorId", requireAuth, requireAdmin, async (req, res) => {
+  const { sectorId } = req.params;
+  const { name } = req.body ?? {};
+  const nextName = String(name ?? "").trim();
+  if (!nextName) {
+    res.status(400).json({ message: "Nome do setor e obrigatorio." });
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const updateRs = await client.query("UPDATE public.sectors SET name=$1 WHERE id=$2 RETURNING id;", [nextName, sectorId]);
+    if (!updateRs.rows[0]) {
+      await client.query("ROLLBACK");
+      res.status(404).json({ message: "Setor nao encontrado." });
+      return;
+    }
+    await client.query("COMMIT");
+    broadcastRefresh();
+    const snapshot = await loadSnapshot(client);
+    res.json(snapshot);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    if (error?.code === "23505") {
+      res.status(400).json({ message: "Ja existe um setor com esse nome." });
+      return;
+    }
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.delete("/sectors/:sectorId", requireAuth, requireAdmin, async (req, res) => {
+  const { sectorId } = req.params;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const sectorCountRs = await client.query("SELECT COUNT(*)::int AS total FROM public.sectors;");
+    if (Number(sectorCountRs.rows[0]?.total || 0) <= 1) {
+      throw new Error("Nao e permitido excluir o unico setor existente.");
+    }
+
+    const operationsUsageRs = await client.query(
+      "SELECT COUNT(*)::int AS total FROM public.item_operations WHERE sector_id=$1;",
+      [sectorId]
+    );
+    if (Number(operationsUsageRs.rows[0]?.total || 0) > 0) {
+      throw new Error("Setor em uso em ordens de producao. Nao e permitido excluir.");
+    }
+
+    const employeeUsageRs = await client.query(
+      `
+      SELECT (
+        (SELECT COUNT(*) FROM public.employee_sectors WHERE sector_id=$1) +
+        (SELECT COUNT(*) FROM public.employees WHERE sector_id=$1)
+      )::int AS total;
+      `,
+      [sectorId]
+    );
+    if (Number(employeeUsageRs.rows[0]?.total || 0) > 0) {
+      throw new Error("Setor vinculado a funcionarios. Remova os vinculos antes de excluir.");
+    }
+
+    const deleteRs = await client.query("DELETE FROM public.sectors WHERE id=$1 RETURNING id;", [sectorId]);
+    if (!deleteRs.rows[0]) {
+      await client.query("ROLLBACK");
+      res.status(404).json({ message: "Setor nao encontrado." });
+      return;
+    }
+
+    const reorderRs = await client.query("SELECT id FROM public.sectors ORDER BY position ASC, created_at ASC;");
+    for (let i = 0; i < reorderRs.rows.length; i += 1) {
+      await client.query("UPDATE public.sectors SET position=$1 WHERE id=$2;", [i + 1, reorderRs.rows[i].id]);
+    }
+
+    await client.query("COMMIT");
+    broadcastRefresh();
+    const snapshot = await loadSnapshot(client);
+    res.json(snapshot);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
 app.post("/sectors/reorder", requireAuth, requireAdmin, async (req, res) => {
   const sectorIds = Array.isArray(req.body?.sectorIds)
     ? req.body.sectorIds.map((value) => String(value).trim()).filter(Boolean)
@@ -854,7 +944,7 @@ app.delete("/orders/:orderId", requireAuth, requireAdmin, async (req, res) => {
 });
 
 app.post("/operations/toggle", requireAuth, async (req, res) => {
-  const { itemId, sectorId, employeeId, done, reason } = req.body ?? {};
+  const { itemId, sectorId, employeeId, done, reason, quantity } = req.body ?? {};
   if (!itemId || !sectorId || typeof done !== "boolean") {
     res.status(400).json({ message: "Payload de operacao invalido." });
     return;
@@ -869,6 +959,8 @@ app.post("/operations/toggle", requireAuth, async (req, res) => {
       SELECT io.id,
              io.released_at,
              io.started_at,
+             io.finished_at,
+             io.useful_minutes,
              io.released_quantity,
              io.completed_quantity,
              io.employee_id AS previous_employee_id,
@@ -893,49 +985,95 @@ app.post("/operations/toggle", requireAuth, async (req, res) => {
     let notificationAction = "UNCONFIRM_OPERATION";
     let rollbackReason = null;
     let processedQuantity = null;
+    let requestedQuantity = null;
 
     if (!done) {
       if (!String(reason ?? "").trim()) {
         throw new Error("Informe o motivo para retornar a operacao.");
       }
 
-      const { completedQuantity } = readOperationQuantities(operation);
-      if (completedQuantity <= quantityEpsilon) {
-        throw new Error("Nao ha baixa realizada para retornar nesta operacao.");
+      const rollbackQuantity = parsePositiveNumber(quantity);
+      if (!rollbackQuantity) {
+        throw new Error("Informe uma quantidade valida para retorno.");
       }
+
+      const { releasedQuantity, completedQuantity, availableQuantity } = readOperationQuantities(operation);
+      if (availableQuantity <= quantityEpsilon) {
+        throw new Error("Nao ha quantidade liberada para retornar ao setor anterior.");
+      }
+      if (rollbackQuantity > availableQuantity + quantityEpsilon) {
+        throw new Error(`Quantidade de retorno maior que a liberada (${availableQuantity}).`);
+      }
+
+      const previousOperationRs = await client.query(
+        `
+        SELECT io.id,
+               io.released_quantity,
+               io.completed_quantity
+        FROM public.item_operations io
+        JOIN public.sectors s ON s.id = io.sector_id
+        WHERE io.item_id = $1
+          AND s.position < $2
+        ORDER BY s.position DESC
+        LIMIT 1;
+        `,
+        [operation.item_id, operation.sector_position]
+      );
+      const previousOperation = previousOperationRs.rows[0];
+      if (!previousOperation) {
+        throw new Error("Nao existe setor anterior para retorno nesta operacao.");
+      }
+
+      const previousCompletedQuantity = Number(previousOperation.completed_quantity || 0);
+      if (rollbackQuantity > previousCompletedQuantity + quantityEpsilon) {
+        throw new Error(
+          `Quantidade de retorno maior que a baixada no setor anterior (${previousCompletedQuantity}).`
+        );
+      }
+
+      const nextReleasedQuantity = Math.max(0, releasedQuantity - rollbackQuantity);
+      if (nextReleasedQuantity + quantityEpsilon < completedQuantity) {
+        throw new Error(
+          "Quantidade de retorno invalida: a quantidade ja baixada no setor atual excede a nova liberacao."
+        );
+      }
+      const currentIsDone = completedQuantity >= nextReleasedQuantity - quantityEpsilon;
 
       await client.query(
         `UPDATE public.item_operations
-         SET employee_id=NULL,
-             status='PENDENTE',
-             started_at=NULL,
-             finished_at=NULL,
-             useful_minutes=NULL,
-             completed_quantity=0
-         WHERE id=$1;`,
-        [operation.id]
+         SET status=$1::operation_status,
+             finished_at=$2,
+             useful_minutes=$3,
+             released_quantity=$4
+         WHERE id=$5;`,
+        [
+          currentIsDone ? "CONCLUIDA" : "PENDENTE",
+          currentIsDone ? operation.finished_at : null,
+          currentIsDone ? operation.useful_minutes : null,
+          nextReleasedQuantity,
+          operation.id
+        ]
       );
 
+      const previousReleasedQuantity = Number(previousOperation.released_quantity || 0);
+      const nextPreviousCompletedQuantity = Math.max(0, previousCompletedQuantity - rollbackQuantity);
+      const previousIsDone = nextPreviousCompletedQuantity >= previousReleasedQuantity - quantityEpsilon;
+
       await client.query(
-        `UPDATE public.item_operations io
-         SET released_quantity=0,
-             completed_quantity=0,
-             status='PENDENTE',
-             employee_id=NULL,
-             started_at=NULL,
-             finished_at=NULL,
-             useful_minutes=NULL
-         FROM public.sectors s
-         WHERE io.sector_id = s.id
-           AND io.item_id = $1
-           AND s.position > $2;`,
-        [operation.item_id, operation.sector_position]
+        `UPDATE public.item_operations
+         SET completed_quantity=$1,
+             status=$2::operation_status,
+             finished_at=CASE WHEN $2::operation_status='PENDENTE'::operation_status THEN NULL ELSE finished_at END,
+             useful_minutes=CASE WHEN $2::operation_status='PENDENTE'::operation_status THEN NULL ELSE useful_minutes END
+         WHERE id=$3;`,
+        [nextPreviousCompletedQuantity, previousIsDone ? "CONCLUIDA" : "PENDENTE", previousOperation.id]
       );
 
       notificationEmployeeId = operation.previous_employee_id || null;
       notificationAction = "ROLLBACK_OPERATION";
       rollbackReason = String(reason).trim();
-      processedQuantity = completedQuantity;
+      requestedQuantity = rollbackQuantity;
+      processedQuantity = rollbackQuantity;
     } else {
       if (!employeeId) {
         throw new Error("Selecione um funcionario.");
@@ -954,9 +1092,9 @@ app.post("/operations/toggle", requireAuth, async (req, res) => {
     await client.query(
       `
       INSERT INTO public.operation_notifications (
-        action, actor_user_id, order_id, item_id, sector_id, employee_id, rollback_reason, processed_quantity
+        action, actor_user_id, order_id, item_id, sector_id, employee_id, rollback_reason, requested_quantity, processed_quantity
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
       `,
       [
         notificationAction,
@@ -966,6 +1104,7 @@ app.post("/operations/toggle", requireAuth, async (req, res) => {
         operation.sector_id,
         notificationEmployeeId,
         rollbackReason,
+        requestedQuantity,
         processedQuantity
       ]
     );

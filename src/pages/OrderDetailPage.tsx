@@ -20,6 +20,14 @@ function OrderDetailPage() {
       }, {}),
     [employees, sectors]
   );
+  const sectorPositionById = useMemo(
+    () =>
+      sectors.reduce<Record<string, number>>((acc, sector, index) => {
+        acc[sector.id] = index;
+        return acc;
+      }, {}),
+    [sectors]
+  );
 
   if (!order) {
     return (
@@ -88,6 +96,11 @@ function OrderDetailPage() {
                     const availableEmployees = employeesBySector[sector.id] ?? [];
                     const cellKey = `${item.id}-${sector.id}`;
                     const selectedEmployeeId = selectedOperators[cellKey] ?? operation.employeeId ?? "";
+                    const rollbackAvailableQuantity = Math.max(
+                      0,
+                      Number(operation.releasedQuantity || 0) - Number(operation.completedQuantity || 0)
+                    );
+                    const hasPreviousSector = (sectorPositionById[sector.id] ?? 0) > 0;
 
                     return (
                       <td key={cellKey}>
@@ -169,8 +182,30 @@ function OrderDetailPage() {
                           </button>
                           <button
                             className="mini-btn ghost"
-                            disabled={operation.completedQuantity <= 0}
+                            disabled={!hasPreviousSector || rollbackAvailableQuantity <= 0}
                             onClick={() => {
+                              const qtyRaw = window.prompt(
+                                `Quantidade para retornar ao setor anterior (max ${rollbackAvailableQuantity}):`,
+                                String(Math.min(rollbackAvailableQuantity, 1))
+                              );
+                              if (!qtyRaw) {
+                                return;
+                              }
+                              const rollbackQuantity = Number(qtyRaw);
+                              if (!Number.isFinite(rollbackQuantity) || rollbackQuantity <= 0) {
+                                setCellErrors((current) => ({
+                                  ...current,
+                                  [cellKey]: "Quantidade de retorno invalida."
+                                }));
+                                return;
+                              }
+                              if (rollbackQuantity > rollbackAvailableQuantity) {
+                                setCellErrors((current) => ({
+                                  ...current,
+                                  [cellKey]: `Quantidade de retorno maior que a liberada (${rollbackAvailableQuantity}).`
+                                }));
+                                return;
+                              }
                               const reason = window.prompt("Motivo obrigatorio para retornar operacao anterior:");
                               if (!reason || !reason.trim()) {
                                 setCellErrors((current) => ({
@@ -187,7 +222,8 @@ function OrderDetailPage() {
                                 sectorId: sector.id,
                                 employeeId: "",
                                 done: false,
-                                reason: reason.trim()
+                                reason: reason.trim(),
+                                quantity: rollbackQuantity
                               }).finally(() => setRunningBatchKey(""));
                             }}
                           >
