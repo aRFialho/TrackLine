@@ -22,7 +22,7 @@ type StoreState = {
   error?: string;
   setSelectedOrder: (orderId?: string) => void;
   resetStore: () => void;
-  bootstrap: () => Promise<void>;
+  bootstrap: (options?: { silent?: boolean }) => Promise<void>;
   addSector: (name: string) => Promise<void>;
   reorderSectors: (sectorIds: string[]) => Promise<void>;
   addEmployee: (name: string, sectorIds: string[]) => Promise<void>;
@@ -267,13 +267,18 @@ export const useProductionStore = create<StoreState>()((set) => ({
       error: undefined
     });
   },
-  bootstrap: async () => {
+  bootstrap: async (options) => {
+    const silent = Boolean(options?.silent);
     if (realtimeBootstrapInFlight) {
       realtimeBootstrapQueued = true;
       return;
     }
     realtimeBootstrapInFlight = true;
-    set({ loading: true, error: undefined });
+    if (silent) {
+      set({ error: undefined });
+    } else {
+      set({ loading: true, error: undefined });
+    }
     try {
       const snapshot = await api.bootstrap();
       applySnapshot(set, snapshot);
@@ -282,7 +287,7 @@ export const useProductionStore = create<StoreState>()((set) => ({
           if (Date.now() < suppressRealtimeUntil) {
             return;
           }
-          void useProductionStore.getState().bootstrap();
+          void useProductionStore.getState().bootstrap({ silent: true });
         });
       }
       set({ initialized: true });
@@ -293,10 +298,12 @@ export const useProductionStore = create<StoreState>()((set) => ({
       });
     } finally {
       realtimeBootstrapInFlight = false;
-      set({ loading: false });
+      if (!silent) {
+        set({ loading: false });
+      }
       if (realtimeBootstrapQueued) {
         realtimeBootstrapQueued = false;
-        void useProductionStore.getState().bootstrap();
+        void useProductionStore.getState().bootstrap({ silent: true });
       }
     }
   },

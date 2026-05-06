@@ -13,18 +13,29 @@
   --border: #cbd5e1;
 }
 
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 * {
   box-sizing: border-box;
 }
 
 body {
   margin: 0;
+  min-height: 100dvh;
   background: radial-gradient(circle at 0% 0%, #dff9f3 0, #f1f5f9 30%);
   color: var(--text);
+  overflow-x: hidden;
+}
+
+#root {
+  min-height: 100dvh;
 }
 
 .app-shell {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   grid-template-columns: 280px 1fr;
 }
@@ -202,6 +213,7 @@ button {
   border-radius: 8px;
   padding: 10px;
   font-size: 14px;
+  max-width: 100%;
 }
 
 button {
@@ -249,6 +261,7 @@ button.danger {
 
 .table-wrap {
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 table {
@@ -557,6 +570,28 @@ hr {
   }
 }
 
+@media (min-width: 761px) and (max-width: 1180px) {
+  .app-shell {
+    grid-template-columns: 240px 1fr;
+  }
+
+  .sidebar {
+    padding: 16px;
+  }
+
+  .content {
+    padding: 14px;
+  }
+
+  .card {
+    padding: 14px;
+  }
+
+  .section-head input {
+    min-width: 180px;
+  }
+}
+
 @media (max-width: 1180px) and (orientation: landscape) {
   .app-shell {
     grid-template-columns: 230px 1fr;
@@ -569,9 +604,22 @@ hr {
   .notifications-list {
     max-height: 28vh;
   }
+
+  .page-title h1 {
+    font-size: 1.35rem;
+  }
+
+  th,
+  td {
+    font-size: 13px;
+  }
 }
 
 @media (max-width: 760px) {
+  :root {
+    font-size: 14px;
+  }
+
   .brand img {
     width: 48px;
     height: 48px;
@@ -599,6 +647,16 @@ hr {
   .sector-check-list {
     grid-template-columns: 1fr;
   }
+
+  .page-title h1 {
+    font-size: 1.2rem;
+  }
+
+  .page-title p,
+  .muted-line,
+  small {
+    font-size: 12px;
+  }
 }
 
 @media (max-width: 560px) and (orientation: portrait) {
@@ -615,5 +673,33 @@ hr {
   button {
     padding: 9px;
     font-size: 13px;
+  }
+
+  .tabs-row {
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .tab-btn {
+    white-space: nowrap;
+  }
+}
+
+@media (max-height: 500px) and (orientation: landscape) {
+  .sidebar {
+    padding: 10px;
+    gap: 8px;
+  }
+
+  .brand {
+    margin-bottom: 10px;
+  }
+
+  .session-box {
+    margin-bottom: 8px;
+  }
+
+  .notifications-box {
+    display: none;
   }
 }

@@ -5,7 +5,7 @@ import { useProductionStore } from "../store/useProductionStore";
 import { useAuthStore } from "../store/useAuthStore";
 
 function Layout() {
-  const { bootstrap, initialized, loading, error, notifications } = useProductionStore();
+  const { bootstrap, initialized, error, notifications } = useProductionStore();
   const { user, logout } = useAuthStore();
   const isAdmin = user?.role === "admin";
   const navItems =
@@ -84,7 +84,7 @@ function Layout() {
         ) : null}
       </aside>
       <main className="content">
-        {!initialized || loading ? <p className="status-line">Sincronizando dados do banco...</p> : null}
+        {!initialized ? <p className="status-line">Sincronizando dados do banco...</p> : null}
         {error ? <p className="error status-line">{error}</p> : null}
         <Outlet />
       </main>

@@ -87,24 +87,67 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function connectRealtime(onRefresh: () => void): (() => void) | undefined {
   const token = getStoredToken();
-  if (!token) {
+  if (!token || typeof window === "undefined") {
     return undefined;
+  }
+
+  let pollTimer: number | undefined;
+  const startPolling = () => {
+    if (pollTimer !== undefined) {
+      return;
+    }
+    pollTimer = window.setInterval(() => {
+      onRefresh();
+    }, 2000);
+  };
+  const stopPolling = () => {
+    if (pollTimer !== undefined) {
+      window.clearInterval(pollTimer);
+      pollTimer = undefined;
+    }
+  };
+
+  if (typeof window.EventSource === "undefined") {
+    startPolling();
+    return () => {
+      stopPolling();
+    };
   }
 
   const url = `${baseUrl}/events?token=${encodeURIComponent(token)}`;
   const source = new EventSource(url);
+  let closed = false;
 
   const refreshHandler = () => {
     onRefresh();
   };
 
   source.addEventListener("refresh", refreshHandler);
+  source.addEventListener("connected", () => {
+    stopPolling();
+  });
 
-  source.onerror = () => {
-    // browser will auto-retry; no-op to avoid noise
+  source.onopen = () => {
+    stopPolling();
   };
 
+  source.onerror = () => {
+    // fallback for environments where SSE is unstable (some Android WebViews/proxies)
+    if (!closed) {
+      startPolling();
+    }
+  };
+
+  const healthTimer = window.setInterval(() => {
+    if (source.readyState === EventSource.CLOSED && !closed) {
+      startPolling();
+    }
+  }, 6000);
+
   return () => {
+    closed = true;
+    stopPolling();
+    window.clearInterval(healthTimer);
     source.removeEventListener("refresh", refreshHandler);
     source.close();
   };
