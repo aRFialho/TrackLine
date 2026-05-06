@@ -22,20 +22,6 @@ export type AuthUser = {
   role: "admin" | "operator";
 };
 
-export type AppUpdateInfo = {
-  latestVersion: string;
-  minimumSupportedVersion: string | null;
-  forceUpdate: boolean;
-  notes: string | null;
-  publishedAt: string;
-  desktop: {
-    downloadUrl: string | null;
-  };
-  android: {
-    downloadUrl: string | null;
-  };
-};
-
 type AuthLoginResponse = {
   token: string;
   user: AuthUser;
@@ -173,7 +159,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ email, password })
     }),
-  appUpdate: () => request<AppUpdateInfo>("/app-update"),
   me: () => request<AuthUser>("/auth/me"),
   bootstrap: () => request<BootstrapSnapshot>("/bootstrap"),
   addSector: (name: string) =>

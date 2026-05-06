@@ -1,6 +1,6 @@
 {
   "name": "trackline",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "main": "electron/main.cjs",
   "description": "TrackLine - Controle de producao com build para EXE e APK",
@@ -17,6 +17,7 @@
     "android:open": "npx cap open android",
     "desktop:build:dir": "npm run build && electron-builder --win --dir",
     "installer:build": "powershell -ExecutionPolicy Bypass -File scripts/release/build-installer.ps1",
+    "dist:bundle": "powershell -ExecutionPolicy Bypass -File scripts/release/build-distribution-bundle.ps1",
     "db:status": "node scripts/db/status.cjs",
     "db:migrate": "node scripts/db/migrate.cjs",
     "db:deploy": "node scripts/db/deploy.cjs",

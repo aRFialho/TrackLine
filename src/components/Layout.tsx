@@ -4,7 +4,6 @@ import dayjs from "dayjs";
 import { useProductionStore } from "../store/useProductionStore";
 import { useAuthStore } from "../store/useAuthStore";
 import { trackLineLogoUrl } from "../lib/branding";
-import UpdatePrompt from "./UpdatePrompt";
 
 function Layout() {
   const { bootstrap, initialized, error, notifications } = useProductionStore();
@@ -27,7 +26,6 @@ function Layout() {
 
   return (
     <div className="app-shell">
-      <UpdatePrompt />
       <aside className="sidebar">
         <div className="brand">
           <img src={trackLineLogoUrl} alt="TrackLine logo" />

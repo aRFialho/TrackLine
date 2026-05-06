@@ -5,11 +5,6 @@ interface TrackLineDesktopBridge {
   apiBaseUrl?: string;
   appVersion?: string;
   getAppVersion?: () => Promise<string>;
-  installDesktopUpdate?: (downloadUrl: string) => Promise<{
-    ok: boolean;
-    mode: "silent-installer" | "open-file";
-    filePath: string;
-  }>;
 }
 
 interface CapacitorBridge {

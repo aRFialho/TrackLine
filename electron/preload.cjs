@@ -28,6 +28,5 @@ contextBridge.exposeInMainWorld("trackline", {
   platform: "desktop",
   apiBaseUrl: explicitApiUrl || `http://127.0.0.1:${apiPort}`,
   appVersion,
-  getAppVersion: () => ipcRenderer.invoke("trackline:getAppVersion"),
-  installDesktopUpdate: (downloadUrl) => ipcRenderer.invoke("trackline:installDesktopUpdate", downloadUrl)
+  getAppVersion: () => ipcRenderer.invoke("trackline:getAppVersion")
 });
