@@ -473,6 +473,35 @@ small {
   margin-top: 6px;
 }
 
+.qty-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.qty-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.qty-chip.released {
+  background: #0f766e;
+  color: #fff;
+  border: 1px solid #115e59;
+}
+
+.qty-chip.completed {
+  background: #e2e8f0;
+  color: #0f172a;
+  border: 1px solid #cbd5e1;
+}
+
 hr {
   border: 0;
   border-top: 1px solid var(--surface-2);

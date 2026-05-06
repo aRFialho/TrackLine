@@ -165,7 +165,8 @@ export const api = {
     sectorId: string;
     employeeId: string;
     mode: BatchOperationMode;
-    itemId: string;
+    itemId?: string;
+    description?: string;
     quantity?: number;
   }) =>
     request<BootstrapSnapshot>("/operations/batch-toggle", {

@@ -45,7 +45,8 @@ type StoreState = {
     sectorId: string;
     employeeId: string;
     mode: BatchOperationMode;
-    itemId: string;
+    itemId?: string;
+    description?: string;
     quantity?: number;
   }) => Promise<void>;
 };
@@ -170,6 +171,60 @@ const applyOptimisticOperationChange = (state: StoreState, payload: {
   return nextOrders;
 };
 
+const applyOptimisticBatchLotChange = (
+  state: StoreState,
+  payload: { orderId: string; sectorId: string; employeeId: string; description: string; requestedQuantity: number }
+) => {
+  const nextOrders = cloneOrders(state.orders);
+  const nowIso = new Date().toISOString();
+  const targetOrder = nextOrders.find((order) => order.id === payload.orderId);
+  if (!targetOrder) {
+    return nextOrders;
+  }
+
+  let remaining = payload.requestedQuantity;
+  const lotItems = targetOrder.items.filter((item) => item.description === payload.description);
+  for (const item of lotItems) {
+    if (remaining <= qtyEpsilon) {
+      break;
+    }
+
+    const currentIndex = item.operations.findIndex((operation) => operation.sectorId === payload.sectorId);
+    if (currentIndex < 0) {
+      continue;
+    }
+
+    const currentOperation = item.operations[currentIndex];
+    const availableQuantity = Math.max(0, currentOperation.releasedQuantity - currentOperation.completedQuantity);
+    if (availableQuantity <= qtyEpsilon) {
+      continue;
+    }
+
+    const qtyToProcess = Math.min(availableQuantity, remaining);
+    currentOperation.employeeId = payload.employeeId || currentOperation.employeeId;
+    currentOperation.startedAt = currentOperation.startedAt ?? nowIso;
+    currentOperation.completedQuantity += qtyToProcess;
+    if (currentOperation.completedQuantity >= currentOperation.releasedQuantity - qtyEpsilon) {
+      currentOperation.status = "CONCLUIDA";
+      currentOperation.finishedAt = nowIso;
+    } else {
+      currentOperation.status = "PENDENTE";
+      currentOperation.finishedAt = undefined;
+    }
+
+    if (currentIndex + 1 < item.operations.length) {
+      const nextOperation = item.operations[currentIndex + 1];
+      nextOperation.releasedQuantity += qtyToProcess;
+      nextOperation.releasedAt = nowIso;
+    }
+
+    remaining -= qtyToProcess;
+  }
+
+  recomputeOrderStatus(targetOrder);
+  return nextOrders;
+};
+
 async function runMutation(
   set: (partial: Partial<StoreState>) => void,
   operation: () => Promise<BootstrapSnapshot>
@@ -278,22 +333,35 @@ export const useProductionStore = create<StoreState>()((set) => ({
       void useProductionStore.getState().bootstrap();
     }
   },
-  batchSetOperations: async ({ orderId, sectorId, employeeId, mode, itemId, quantity }) => {
+  batchSetOperations: async ({ orderId, sectorId, employeeId, mode, itemId, description, quantity }) => {
     const previousOrders = useProductionStore.getState().orders;
-    set((state) => ({
-      error: undefined,
-      orders: applyOptimisticOperationChange(state, {
-        itemId,
-        sectorId,
-        employeeId,
-        done: true,
-        requestedQuantity: mode === "CUSTOM_QUANTITY" ? quantity : undefined
-      })
-    }));
+    if (mode === "CUSTOM_QUANTITY" && description && quantity) {
+      set((state) => ({
+        error: undefined,
+        orders: applyOptimisticBatchLotChange(state, {
+          orderId,
+          sectorId,
+          employeeId,
+          description,
+          requestedQuantity: quantity
+        })
+      }));
+    } else if (itemId) {
+      set((state) => ({
+        error: undefined,
+        orders: applyOptimisticOperationChange(state, {
+          itemId,
+          sectorId,
+          employeeId,
+          done: true,
+          requestedQuantity: mode === "CUSTOM_QUANTITY" ? quantity : undefined
+        })
+      }));
+    }
     set({ error: undefined });
     suppressRealtimeUntil = Date.now() + 300;
     try {
-      const snapshot = await api.batchSetOperations({ orderId, sectorId, employeeId, mode, itemId, quantity });
+      const snapshot = await api.batchSetOperations({ orderId, sectorId, employeeId, mode, itemId, description, quantity });
       applySnapshot(set, snapshot);
     } catch (error) {
       set({

@@ -186,7 +186,7 @@ async function assertPreviousSectorsDone(client, itemId, sectorPosition) {
   }
 }
 
-async function completeOperation(client, operation, employeeId, schedule, nowIso) {
+async function completeOperation(client, operation, employeeId, schedule, nowIso, requestedQuantity) {
   await assertPreviousSectorsDone(client, operation.item_id, operation.sector_position);
 
   const { releasedQuantity, completedQuantity, availableQuantity } = readOperationQuantities(operation);
@@ -216,7 +216,13 @@ async function completeOperation(client, operation, employeeId, schedule, nowIso
     ? operation.started_at.toISOString()
     : previousFinishedAt || operation.released_at.toISOString();
 
-  const quantityToProcess = availableQuantity;
+  const quantityToProcess = Math.max(
+    0,
+    Math.min(availableQuantity, requestedQuantity ?? availableQuantity)
+  );
+  if (quantityToProcess <= quantityEpsilon) {
+    throw new Error("Quantidade solicitada invalida para baixa.");
+  }
   const updatedCompletedQuantity = completedQuantity + quantityToProcess;
   const isFullyDone = releasedQuantity > 0 && updatedCompletedQuantity >= releasedQuantity - quantityEpsilon;
   const usefulMinutes = isFullyDone ? calculateUsefulMinutes(startedAt, nowIso, schedule) : null;
@@ -975,21 +981,20 @@ app.post("/operations/toggle", requireAuth, async (req, res) => {
 });
 
 app.post("/operations/batch-toggle", requireAuth, async (req, res) => {
-  const { orderId, sectorId, employeeId, mode, itemId, quantity } = req.body ?? {};
+  const { orderId, sectorId, employeeId, mode, itemId, description, quantity } = req.body ?? {};
   const batchMode = String(mode || "");
   if (!orderId || !sectorId || !employeeId || !["SINGLE_ITEM", "CUSTOM_QUANTITY"].includes(batchMode)) {
     res.status(400).json({ message: "Payload de baixa em lote invalido." });
     return;
   }
 
-  if (!itemId) {
-    res.status(400).json({ message: "Selecione o item para efetuar a baixa." });
+  const parsedQuantity = parsePositiveNumber(quantity);
+  if (batchMode === "CUSTOM_QUANTITY" && (!parsedQuantity || !String(description || "").trim())) {
+    res.status(400).json({ message: "Informe uma quantidade valida para baixa personalizada." });
     return;
   }
-
-  const parsedQuantity = parsePositiveNumber(quantity);
-  if (batchMode === "CUSTOM_QUANTITY" && !parsedQuantity) {
-    res.status(400).json({ message: "Informe uma quantidade valida para baixa personalizada." });
+  if (batchMode === "SINGLE_ITEM" && !itemId) {
+    res.status(400).json({ message: "Selecione o item para efetuar a baixa." });
     return;
   }
 
@@ -1003,8 +1008,7 @@ app.post("/operations/batch-toggle", requireAuth, async (req, res) => {
     const schedule = mapSchedule(scheduleRs.rows[0]);
     const nowIso = new Date().toISOString();
 
-    const operationRs = await client.query(
-      `
+    const baseSelect = `
       SELECT io.id,
              io.item_id,
              io.released_at,
@@ -1013,106 +1017,71 @@ app.post("/operations/batch-toggle", requireAuth, async (req, res) => {
              io.released_quantity,
              io.completed_quantity,
              s.position AS sector_position,
-             pi.order_id
+             pi.order_id,
+             pi.description
       FROM public.item_operations io
       JOIN public.production_items pi ON pi.id = io.item_id
       JOIN public.sectors s ON s.id = io.sector_id
       WHERE pi.order_id = $1
         AND io.sector_id = $2
-        AND io.item_id = $3
-      LIMIT 1;
-      `,
-      [orderId, sectorId, itemId]
-    );
-    const operation = operationRs.rows[0];
-    if (!operation) {
-      throw new Error("Operacao nao encontrada para este item/setor.");
+    `;
+
+    let operationRows = [];
+    if (batchMode === "SINGLE_ITEM") {
+      const operationRs = await client.query(`${baseSelect} AND io.item_id = $3 LIMIT 1;`, [orderId, sectorId, itemId]);
+      operationRows = operationRs.rows;
+    } else {
+      const operationRs = await client.query(
+        `${baseSelect} AND pi.description = $3 ORDER BY pi.created_at ASC, io.created_at ASC;`,
+        [orderId, sectorId, String(description).trim()]
+      );
+      operationRows = operationRs.rows;
     }
 
-    const { availableQuantity } = readOperationQuantities(operation);
-    if (availableQuantity <= quantityEpsilon) {
-      throw new Error("Sem quantidade liberada para baixa neste setor.");
+    if (operationRows.length === 0) {
+      throw new Error("Operacao nao encontrada para os filtros informados.");
     }
 
-    const requestedQuantity = batchMode === "CUSTOM_QUANTITY" ? parsedQuantity : availableQuantity;
+    let totalAvailable = 0;
+    for (const operation of operationRows) {
+      totalAvailable += readOperationQuantities(operation).availableQuantity;
+    }
+
+    if (totalAvailable <= quantityEpsilon) {
+      throw new Error("Sem quantidade liberada para baixa.");
+    }
+
+    const requestedQuantity = batchMode === "CUSTOM_QUANTITY" ? parsedQuantity : totalAvailable;
     if (!requestedQuantity || requestedQuantity <= 0) {
       throw new Error("Quantidade solicitada invalida.");
     }
-    if (requestedQuantity > availableQuantity + quantityEpsilon) {
-      throw new Error(`Quantidade solicitada maior que a liberada (${availableQuantity}).`);
+    if (requestedQuantity > totalAvailable + quantityEpsilon) {
+      throw new Error(`Quantidade solicitada maior que a liberada (${totalAvailable}).`);
     }
 
-    await assertPreviousSectorsDone(client, operation.item_id, operation.sector_position);
+    let remaining = requestedQuantity;
+    let processedQuantity = 0;
+    for (const operation of operationRows) {
+      if (remaining <= quantityEpsilon) {
+        break;
+      }
 
-    const previousSectorRs = await client.query(
-      `
-      SELECT io.finished_at
-      FROM public.item_operations io
-      JOIN public.sectors s ON s.id = io.sector_id
-      WHERE io.item_id = $1
-        AND s.position < $2
-        AND io.finished_at IS NOT NULL
-      ORDER BY s.position DESC
-      LIMIT 1;
-      `,
-      [operation.item_id, operation.sector_position]
-    );
+      const operationAvailable = readOperationQuantities(operation).availableQuantity;
+      if (operationAvailable <= quantityEpsilon) {
+        continue;
+      }
 
-    const previousFinishedAt = previousSectorRs.rows[0]?.finished_at
-      ? previousSectorRs.rows[0].finished_at.toISOString()
-      : undefined;
-    const startedAt = operation.started_at
-      ? operation.started_at.toISOString()
-      : previousFinishedAt || operation.released_at.toISOString();
-
-    const completedQuantity = Number(operation.completed_quantity || 0);
-    const releasedQuantity = Number(operation.released_quantity || 0);
-    const updatedCompletedQuantity = completedQuantity + requestedQuantity;
-    const isFullyDone = releasedQuantity > 0 && updatedCompletedQuantity >= releasedQuantity - quantityEpsilon;
-    const usefulMinutes = isFullyDone ? calculateUsefulMinutes(startedAt, nowIso, schedule) : null;
-
-    await client.query(
-      `UPDATE public.item_operations
-       SET employee_id=$1,
-           status=$2::operation_status,
-           started_at=COALESCE(started_at, $3::timestamptz),
-           finished_at=$4,
-           useful_minutes=$5,
-           completed_quantity=$6
-       WHERE id=$7;`,
-      [
-        employeeId,
-        isFullyDone ? "CONCLUIDA" : "PENDENTE",
-        startedAt,
-        isFullyDone ? nowIso : null,
-        usefulMinutes,
-        updatedCompletedQuantity,
-        operation.id
-      ]
-    );
-
-    const nextOperationRs = await client.query(
-      `
-      SELECT io.id
-      FROM public.item_operations io
-      JOIN public.sectors s ON s.id = io.sector_id
-      WHERE io.item_id = $1
-        AND s.position > $2
-      ORDER BY s.position ASC
-      LIMIT 1;
-      `,
-      [operation.item_id, operation.sector_position]
-    );
-
-    if (nextOperationRs.rows[0]) {
-      await client.query(
-        `UPDATE public.item_operations
-         SET released_at=$1,
-             released_quantity=released_quantity + $2
-         WHERE id=$3;`,
-        [nowIso, requestedQuantity, nextOperationRs.rows[0].id]
-      );
+      const quantityToProcess = Math.min(remaining, operationAvailable);
+      const completionResult = await completeOperation(client, operation, employeeId, schedule, nowIso, quantityToProcess);
+      remaining -= completionResult.processedQuantity;
+      processedQuantity += completionResult.processedQuantity;
     }
+
+    if (processedQuantity <= quantityEpsilon) {
+      throw new Error("Nenhuma quantidade foi processada.");
+    }
+
+    const operation = operationRows[0];
 
     await client.query(
       `
@@ -1137,7 +1106,7 @@ app.post("/operations/batch-toggle", requireAuth, async (req, res) => {
         employeeId,
         batchMode,
         requestedQuantity,
-        requestedQuantity
+        processedQuantity
       ]
     );
 

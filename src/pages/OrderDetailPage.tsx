@@ -76,15 +76,25 @@ function OrderDetailPage() {
                       return <td key={`${item.id}-${sector.id}`}>-</td>;
                     }
                     const availableQuantity = Math.max(0, Number(operation.releasedQuantity || 0) - Number(operation.completedQuantity || 0));
+                    const lotAvailableQuantity = order.items
+                      .filter((candidate) => candidate.description === item.description)
+                      .reduce((sum, candidate) => {
+                        const lotOperation = candidate.operations.find((op) => op.sectorId === sector.id);
+                        if (!lotOperation) {
+                          return sum;
+                        }
+                        return sum + Math.max(0, Number(lotOperation.releasedQuantity || 0) - Number(lotOperation.completedQuantity || 0));
+                      }, 0);
                     const availableEmployees = employeesBySector[sector.id] ?? [];
                     const cellKey = `${item.id}-${sector.id}`;
                     const selectedEmployeeId = selectedOperators[cellKey] ?? operation.employeeId ?? "";
 
                     return (
                       <td key={cellKey}>
-                        <small>
-                          Liberada: {operation.releasedQuantity} | Baixada: {operation.completedQuantity}
-                        </small>
+                        <div className="qty-legend">
+                          <span className="qty-chip released">Liberada: {operation.releasedQuantity}</span>
+                          <span className="qty-chip completed">Baixada: {operation.completedQuantity}</span>
+                        </div>
                         <small>Status: {operation.status}</small>
                         <select
                           value={selectedEmployeeId}
@@ -120,11 +130,11 @@ function OrderDetailPage() {
                           </button>
                           <button
                             className="mini-btn ghost"
-                            disabled={!selectedEmployeeId || availableQuantity <= 0}
+                            disabled={!selectedEmployeeId || lotAvailableQuantity <= 0}
                             onClick={() => {
                               const raw = window.prompt(
-                                `Quantidade para baixar no item "${item.description}" (max ${availableQuantity}):`,
-                                String(Math.min(availableQuantity, 1))
+                                `Quantidade para baixa por lote "${item.description}" (max ${lotAvailableQuantity}):`,
+                                String(Math.min(lotAvailableQuantity, 1))
                               );
                               if (!raw) {
                                 return;
@@ -137,10 +147,10 @@ function OrderDetailPage() {
                                 }));
                                 return;
                               }
-                              if (nextQty > availableQuantity) {
+                              if (nextQty > lotAvailableQuantity) {
                                 setCellErrors((current) => ({
                                   ...current,
-                                  [cellKey]: `Quantidade maior que a liberada (${availableQuantity}).`
+                                  [cellKey]: `Quantidade maior que a liberada no lote (${lotAvailableQuantity}).`
                                 }));
                                 return;
                               }
@@ -150,12 +160,12 @@ function OrderDetailPage() {
                                 sectorId: sector.id,
                                 employeeId: selectedEmployeeId,
                                 mode: "CUSTOM_QUANTITY",
-                                itemId: item.id,
+                                description: item.description,
                                 quantity: nextQty
                               }).finally(() => setRunningBatchKey(""));
                             }}
                           >
-                            {runningBatchKey === `${cellKey}-qty` ? "..." : "Baixa quantidade"}
+                            {runningBatchKey === `${cellKey}-qty` ? "..." : "Baixa quantidade (lote)"}
                           </button>
                           <button
                             className="mini-btn ghost"
