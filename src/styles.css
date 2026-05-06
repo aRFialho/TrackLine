@@ -230,6 +230,23 @@ button.danger {
   min-width: 260px;
 }
 
+.tabs-row {
+  display: flex;
+  gap: 8px;
+}
+
+.tab-btn {
+  background: #fff;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.tab-btn.active {
+  background: var(--primary-soft);
+  border-color: #99f6e4;
+  color: #115e59;
+}
+
 .table-wrap {
   overflow-x: auto;
 }

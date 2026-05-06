@@ -24,6 +24,8 @@ export type ItemOperation = {
   employeeId?: string;
   status: OperationStatus;
   releasedAt: string;
+  releasedQuantity: number;
+  completedQuantity: number;
   startedAt?: string;
   finishedAt?: string;
   usefulMinutes?: number;

@@ -18,21 +18,23 @@ function OrdersPage() {
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<"ABERTAS" | "FINALIZADAS">("ABERTAS");
 
   const employeeMap = useMemo(() => Object.fromEntries(employees.map((employee) => [employee.id, employee.name])), [employees]);
 
   const filteredOrders = useMemo(() => {
     const q = query.trim().toLowerCase();
+    const statusFiltered = orders.filter((order) => (activeTab === "ABERTAS" ? order.status !== "FINALIZADA" : order.status === "FINALIZADA"));
     if (!q) {
-      return orders;
+      return statusFiltered;
     }
-    return orders.filter((order) => {
+    return statusFiltered.filter((order) => {
       const byNumber = order.number.toLowerCase().includes(q);
       const byName = order.name.toLowerCase().includes(q);
       const byDate = fmtDate(order.createdAt).toLowerCase().includes(q);
       return byNumber || byName || byDate;
     });
-  }, [orders, query]);
+  }, [orders, query, activeTab]);
 
   const averageBySector = (orderId: string, sectorId: string) => {
     const order = orders.find((candidate) => candidate.id === orderId);
@@ -147,6 +149,22 @@ function OrdersPage() {
       <div className="card">
         <div className="section-head">
           <h2>Lista de OPs</h2>
+          <div className="tabs-row">
+            <button
+              type="button"
+              className={activeTab === "ABERTAS" ? "tab-btn active" : "tab-btn"}
+              onClick={() => setActiveTab("ABERTAS")}
+            >
+              OPs abertas
+            </button>
+            <button
+              type="button"
+              className={activeTab === "FINALIZADAS" ? "tab-btn active" : "tab-btn"}
+              onClick={() => setActiveTab("FINALIZADAS")}
+            >
+              OPs finalizadas
+            </button>
+          </div>
           <input placeholder="Buscar por numero, nome ou data" value={query} onChange={(event) => setQuery(event.target.value)} />
         </div>
         <div className="table-wrap">
@@ -183,9 +201,18 @@ function OrdersPage() {
                   <td>{lastOperatorName(order.id)}</td>
                   <td className="actions">
                     <button onClick={() => navigate(`/ops/${order.id}`)}>Abrir</button>
-                    {isAdmin ? <button onClick={() => void finalizeOrder(order.id)}>Finalizar</button> : null}
+                    {isAdmin && order.status !== "FINALIZADA" ? <button onClick={() => void finalizeOrder(order.id)}>Finalizar</button> : null}
                     {isAdmin ? (
-                      <button className="danger" onClick={() => void deleteOrder(order.id)}>
+                      <button
+                        className="danger"
+                        onClick={() => {
+                          const confirmed = window.confirm(`Confirma excluir a OP ${order.number}? Esta acao nao pode ser desfeita.`);
+                          if (!confirmed) {
+                            return;
+                          }
+                          void deleteOrder(order.id);
+                        }}
+                      >
                         Excluir
                       </button>
                     ) : null}

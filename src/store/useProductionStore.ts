@@ -45,8 +45,7 @@ type StoreState = {
     sectorId: string;
     employeeId: string;
     mode: BatchOperationMode;
-    itemId?: string;
-    description?: string;
+    itemId: string;
     quantity?: number;
   }) => Promise<void>;
 };
@@ -60,6 +59,8 @@ const defaultSchedule: WorkSchedule = {
 
 let disconnectRealtime: (() => void) | undefined;
 let suppressRealtimeUntil = 0;
+let realtimeBootstrapInFlight = false;
+let realtimeBootstrapQueued = false;
 
 const applySnapshot = (set: (partial: Partial<StoreState>) => void, snapshot: BootstrapSnapshot) => {
   set({
@@ -72,12 +73,109 @@ const applySnapshot = (set: (partial: Partial<StoreState>) => void, snapshot: Bo
   });
 };
 
+const qtyEpsilon = 0.00001;
+
+const cloneOrders = (orders: ProductionOrder[]): ProductionOrder[] =>
+  orders.map((order) => ({
+    ...order,
+    items: order.items.map((item) => ({
+      ...item,
+      operations: item.operations.map((operation) => ({ ...operation }))
+    }))
+  }));
+
+const recomputeOrderStatus = (order: ProductionOrder) => {
+  const allDone = order.items
+    .flatMap((item) => item.operations)
+    .every((operation) => operation.status === "CONCLUIDA");
+  order.status = allDone ? "FINALIZADA" : "ABERTA";
+  if (!allDone) {
+    order.finishedAt = undefined;
+  }
+};
+
+const applyOptimisticOperationChange = (state: StoreState, payload: {
+  itemId: string;
+  sectorId: string;
+  employeeId: string;
+  done: boolean;
+  requestedQuantity?: number;
+}) => {
+  const nextOrders = cloneOrders(state.orders);
+  const nowIso = new Date().toISOString();
+
+  for (const order of nextOrders) {
+    const item = order.items.find((candidate) => candidate.id === payload.itemId);
+    if (!item) {
+      continue;
+    }
+
+    const currentIndex = item.operations.findIndex((operation) => operation.sectorId === payload.sectorId);
+    if (currentIndex < 0) {
+      continue;
+    }
+
+    const currentOperation = item.operations[currentIndex];
+    const availableQuantity = Math.max(0, currentOperation.releasedQuantity - currentOperation.completedQuantity);
+
+    if (!payload.done) {
+      currentOperation.employeeId = undefined;
+      currentOperation.status = "PENDENTE";
+      currentOperation.startedAt = undefined;
+      currentOperation.finishedAt = undefined;
+      currentOperation.usefulMinutes = undefined;
+      currentOperation.completedQuantity = 0;
+      for (let i = currentIndex + 1; i < item.operations.length; i += 1) {
+        item.operations[i].employeeId = undefined;
+        item.operations[i].status = "PENDENTE";
+        item.operations[i].startedAt = undefined;
+        item.operations[i].finishedAt = undefined;
+        item.operations[i].usefulMinutes = undefined;
+        item.operations[i].releasedQuantity = 0;
+        item.operations[i].completedQuantity = 0;
+      }
+      recomputeOrderStatus(order);
+      return nextOrders;
+    }
+
+    const qtyToProcess = Math.max(
+      0,
+      Math.min(availableQuantity, payload.requestedQuantity ?? availableQuantity)
+    );
+    if (qtyToProcess <= qtyEpsilon) {
+      return nextOrders;
+    }
+
+    currentOperation.employeeId = payload.employeeId || currentOperation.employeeId;
+    currentOperation.startedAt = currentOperation.startedAt ?? nowIso;
+    currentOperation.completedQuantity += qtyToProcess;
+    if (currentOperation.completedQuantity >= currentOperation.releasedQuantity - qtyEpsilon) {
+      currentOperation.status = "CONCLUIDA";
+      currentOperation.finishedAt = nowIso;
+    } else {
+      currentOperation.status = "PENDENTE";
+      currentOperation.finishedAt = undefined;
+    }
+
+    if (currentIndex + 1 < item.operations.length) {
+      const nextOperation = item.operations[currentIndex + 1];
+      nextOperation.releasedQuantity += qtyToProcess;
+      nextOperation.releasedAt = nowIso;
+    }
+
+    recomputeOrderStatus(order);
+    return nextOrders;
+  }
+
+  return nextOrders;
+};
+
 async function runMutation(
   set: (partial: Partial<StoreState>) => void,
   operation: () => Promise<BootstrapSnapshot>
 ): Promise<void> {
   set({ loading: true, error: undefined });
-  suppressRealtimeUntil = Date.now() + 1800;
+  suppressRealtimeUntil = Date.now() + 300;
   try {
     const snapshot = await operation();
     applySnapshot(set, snapshot);
@@ -115,6 +213,11 @@ export const useProductionStore = create<StoreState>()((set) => ({
     });
   },
   bootstrap: async () => {
+    if (realtimeBootstrapInFlight) {
+      realtimeBootstrapQueued = true;
+      return;
+    }
+    realtimeBootstrapInFlight = true;
     set({ loading: true, error: undefined });
     try {
       const snapshot = await api.bootstrap();
@@ -134,7 +237,12 @@ export const useProductionStore = create<StoreState>()((set) => ({
         initialized: true
       });
     } finally {
+      realtimeBootstrapInFlight = false;
       set({ loading: false });
+      if (realtimeBootstrapQueued) {
+        realtimeBootstrapQueued = false;
+        void useProductionStore.getState().bootstrap();
+      }
     }
   },
   addSector: async (name) => runMutation(set, () => api.addSector(name)),
@@ -147,23 +255,52 @@ export const useProductionStore = create<StoreState>()((set) => ({
   deleteOrder: async (orderId) => runMutation(set, () => api.deleteOrder(orderId)),
   finalizeOrder: async (orderId) => runMutation(set, () => api.finalizeOrder(orderId)),
   setOperationDone: async ({ itemId, sectorId, employeeId, done, reason }) => {
+    const previousOrders = useProductionStore.getState().orders;
+    set((state) => ({
+      error: undefined,
+      orders: applyOptimisticOperationChange(state, {
+        itemId,
+        sectorId,
+        employeeId,
+        done
+      })
+    }));
     set({ error: undefined });
-    suppressRealtimeUntil = Date.now() + 1800;
+    suppressRealtimeUntil = Date.now() + 300;
     try {
       const snapshot = await api.setOperationDone({ itemId, sectorId, employeeId, done, reason });
       applySnapshot(set, snapshot);
     } catch (error) {
-      set({ error: error instanceof Error ? error.message : "Falha ao atualizar operacao." });
+      set({
+        error: error instanceof Error ? error.message : "Falha ao atualizar operacao.",
+        orders: previousOrders
+      });
+      void useProductionStore.getState().bootstrap();
     }
   },
-  batchSetOperations: async ({ orderId, sectorId, employeeId, mode, itemId, description, quantity }) => {
+  batchSetOperations: async ({ orderId, sectorId, employeeId, mode, itemId, quantity }) => {
+    const previousOrders = useProductionStore.getState().orders;
+    set((state) => ({
+      error: undefined,
+      orders: applyOptimisticOperationChange(state, {
+        itemId,
+        sectorId,
+        employeeId,
+        done: true,
+        requestedQuantity: mode === "CUSTOM_QUANTITY" ? quantity : undefined
+      })
+    }));
     set({ error: undefined });
-    suppressRealtimeUntil = Date.now() + 1800;
+    suppressRealtimeUntil = Date.now() + 300;
     try {
-      const snapshot = await api.batchSetOperations({ orderId, sectorId, employeeId, mode, itemId, description, quantity });
+      const snapshot = await api.batchSetOperations({ orderId, sectorId, employeeId, mode, itemId, quantity });
       applySnapshot(set, snapshot);
     } catch (error) {
-      set({ error: error instanceof Error ? error.message : "Falha ao executar baixa em lote." });
+      set({
+        error: error instanceof Error ? error.message : "Falha ao executar baixa em lote.",
+        orders: previousOrders
+      });
+      void useProductionStore.getState().bootstrap();
     }
   }
 }));

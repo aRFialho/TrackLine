@@ -75,105 +75,23 @@ function OrderDetailPage() {
                     if (!operation) {
                       return <td key={`${item.id}-${sector.id}`}>-</td>;
                     }
+                    const availableQuantity = Math.max(0, Number(operation.releasedQuantity || 0) - Number(operation.completedQuantity || 0));
                     const availableEmployees = employeesBySector[sector.id] ?? [];
                     const cellKey = `${item.id}-${sector.id}`;
                     const selectedEmployeeId = selectedOperators[cellKey] ?? operation.employeeId ?? "";
 
                     return (
                       <td key={cellKey}>
-                        <label className="op-check">
-                          <input
-                            type="checkbox"
-                            checked={operation.status === "CONCLUIDA"}
-                            onChange={(event) => {
-                              if (!event.target.checked) {
-                                const reason = window.prompt(
-                                  "Informe o motivo do retrocesso para retornar a operacao anterior:"
-                                );
-                                if (!reason || !reason.trim()) {
-                                  setCellErrors((current) => ({
-                                    ...current,
-                                    [cellKey]: "Motivo obrigatorio para retornar operacao."
-                                  }));
-                                  return;
-                                }
-
-                                setCellErrors((current) => ({ ...current, [cellKey]: "" }));
-                                void setOperationDone({
-                                  orderId: order.id,
-                                  itemId: item.id,
-                                  sectorId: sector.id,
-                                  employeeId: "",
-                                  done: false,
-                                  reason: reason.trim()
-                                });
-                                return;
-                              }
-
-                              if (!selectedEmployeeId) {
-                                setCellErrors((current) => ({
-                                  ...current,
-                                  [cellKey]: "Selecione o operador antes de confirmar."
-                                }));
-                                return;
-                              }
-
-                              setCellErrors((current) => ({ ...current, [cellKey]: "" }));
-                              void setOperationDone({
-                                orderId: order.id,
-                                itemId: item.id,
-                                sectorId: sector.id,
-                                employeeId: selectedEmployeeId,
-                                done: true
-                              });
-                            }}
-                          />
-                          {operation.status}
-                        </label>
-                        {operation.status === "CONCLUIDA" ? (
-                          <button
-                            className="mini-btn ghost"
-                            onClick={() => {
-                              const reason = window.prompt(
-                                "Motivo obrigatorio para retornar para a operacao anterior:"
-                              );
-                              if (!reason || !reason.trim()) {
-                                setCellErrors((current) => ({
-                                  ...current,
-                                  [cellKey]: "Motivo obrigatorio para retornar operacao."
-                                }));
-                                return;
-                              }
-                              setCellErrors((current) => ({ ...current, [cellKey]: "" }));
-                              void setOperationDone({
-                                orderId: order.id,
-                                itemId: item.id,
-                                sectorId: sector.id,
-                                employeeId: "",
-                                done: false,
-                                reason: reason.trim()
-                              });
-                            }}
-                          >
-                            Retornar operacao anterior
-                          </button>
-                        ) : null}
+                        <small>
+                          Liberada: {operation.releasedQuantity} | Baixada: {operation.completedQuantity}
+                        </small>
+                        <small>Status: {operation.status}</small>
                         <select
                           value={selectedEmployeeId}
                           onChange={(event) => {
                             const nextEmployeeId = event.target.value;
                             setSelectedOperators((current) => ({ ...current, [cellKey]: nextEmployeeId }));
                             setCellErrors((current) => ({ ...current, [cellKey]: "" }));
-
-                            if (operation.status === "CONCLUIDA" && nextEmployeeId) {
-                              void setOperationDone({
-                                orderId: order.id,
-                                itemId: item.id,
-                                sectorId: sector.id,
-                                employeeId: nextEmployeeId,
-                                done: true
-                              });
-                            }
                           }}
                         >
                           <option value="">Selecionar</option>
@@ -186,7 +104,7 @@ function OrderDetailPage() {
                         <div className="batch-actions">
                           <button
                             className="mini-btn"
-                            disabled={!selectedEmployeeId || operation.status === "CONCLUIDA"}
+                            disabled={!selectedEmployeeId || availableQuantity <= 0}
                             onClick={() => {
                               setRunningBatchKey(`${cellKey}-single`);
                               void batchSetOperations({
@@ -202,25 +120,12 @@ function OrderDetailPage() {
                           </button>
                           <button
                             className="mini-btn ghost"
-                            disabled={!selectedEmployeeId}
+                            disabled={!selectedEmployeeId || availableQuantity <= 0}
                             onClick={() => {
-                              setRunningBatchKey(`${cellKey}-lot`);
-                              void batchSetOperations({
-                                orderId: order.id,
-                                sectorId: sector.id,
-                                employeeId: selectedEmployeeId,
-                                mode: "FULL_LOT",
-                                description: item.description
-                              }).finally(() => setRunningBatchKey(""));
-                            }}
-                          >
-                            {runningBatchKey === `${cellKey}-lot` ? "..." : "Baixa lote"}
-                          </button>
-                          <button
-                            className="mini-btn ghost"
-                            disabled={!selectedEmployeeId}
-                            onClick={() => {
-                              const raw = window.prompt(`Quantidade para baixar no lote "${item.description}":`, "1");
+                              const raw = window.prompt(
+                                `Quantidade para baixar no item "${item.description}" (max ${availableQuantity}):`,
+                                String(Math.min(availableQuantity, 1))
+                              );
                               if (!raw) {
                                 return;
                               }
@@ -232,18 +137,51 @@ function OrderDetailPage() {
                                 }));
                                 return;
                               }
+                              if (nextQty > availableQuantity) {
+                                setCellErrors((current) => ({
+                                  ...current,
+                                  [cellKey]: `Quantidade maior que a liberada (${availableQuantity}).`
+                                }));
+                                return;
+                              }
                               setRunningBatchKey(`${cellKey}-qty`);
                               void batchSetOperations({
                                 orderId: order.id,
                                 sectorId: sector.id,
                                 employeeId: selectedEmployeeId,
                                 mode: "CUSTOM_QUANTITY",
-                                description: item.description,
+                                itemId: item.id,
                                 quantity: nextQty
                               }).finally(() => setRunningBatchKey(""));
                             }}
                           >
                             {runningBatchKey === `${cellKey}-qty` ? "..." : "Baixa quantidade"}
+                          </button>
+                          <button
+                            className="mini-btn ghost"
+                            disabled={operation.completedQuantity <= 0}
+                            onClick={() => {
+                              const reason = window.prompt("Motivo obrigatorio para retornar operacao anterior:");
+                              if (!reason || !reason.trim()) {
+                                setCellErrors((current) => ({
+                                  ...current,
+                                  [cellKey]: "Motivo obrigatorio para retornar operacao."
+                                }));
+                                return;
+                              }
+                              setRunningBatchKey(`${cellKey}-rollback`);
+                              setCellErrors((current) => ({ ...current, [cellKey]: "" }));
+                              void setOperationDone({
+                                orderId: order.id,
+                                itemId: item.id,
+                                sectorId: sector.id,
+                                employeeId: "",
+                                done: false,
+                                reason: reason.trim()
+                              }).finally(() => setRunningBatchKey(""));
+                            }}
+                          >
+                            {runningBatchKey === `${cellKey}-rollback` ? "..." : "Retornar operacao anterior"}
                           </button>
                         </div>
                         {cellErrors[cellKey] ? <small className="error">{cellErrors[cellKey]}</small> : null}
