@@ -547,6 +547,59 @@ small {
   overflow: auto;
 }
 
+.order-items-table {
+  table-layout: fixed;
+  min-width: 1320px;
+}
+
+.order-items-table .col-qty {
+  width: 64px;
+}
+
+.order-items-table .col-unit {
+  width: 70px;
+}
+
+.order-items-table .col-description {
+  width: 360px;
+}
+
+.order-items-table .col-sector {
+  width: 220px;
+}
+
+.product-description-cell {
+  font-size: 18px;
+  line-height: 1.35;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.operation-cell {
+  padding: 8px 8px 10px;
+}
+
+.operation-cell.empty {
+  color: var(--muted);
+}
+
+.operation-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px;
+  min-height: 248px;
+  display: grid;
+  grid-template-rows: auto auto auto 1fr auto auto;
+  gap: 6px;
+  align-content: start;
+  background: #fff;
+}
+
+.operation-card select {
+  width: 100%;
+  min-height: 40px;
+}
+
 .item-complete-row td {
   background: #d1d5db;
 }
@@ -647,6 +700,22 @@ hr {
   td {
     padding: 8px;
     font-size: 13px;
+  }
+
+  .product-description-cell {
+    font-size: 15px;
+  }
+
+  .order-items-table .col-description {
+    width: 280px;
+  }
+
+  .order-items-table .col-sector {
+    width: 210px;
+  }
+
+  .operation-card {
+    min-height: 236px;
   }
 
   .login-card {

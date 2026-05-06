@@ -173,11 +173,13 @@ function OrderDetailPage() {
           <table className="order-items-table">
             <thead>
               <tr>
-                <th>QTDE</th>
-                <th>UN</th>
-                <th>DESCRICAO</th>
+                <th className="col-qty">QTDE</th>
+                <th className="col-unit">UN</th>
+                <th className="col-description">DESCRICAO</th>
                 {sectors.map((sector) => (
-                  <th key={sector.id}>{sector.name}</th>
+                  <th key={sector.id} className="col-sector">
+                    {sector.name}
+                  </th>
                 ))}
               </tr>
             </thead>
@@ -192,11 +194,15 @@ function OrderDetailPage() {
                   <tr key={item.id} className={itemCompleted ? "item-complete-row" : ""}>
                     <td>{item.quantity}</td>
                     <td>{item.unit}</td>
-                    <td>{item.description}</td>
+                    <td className="product-description-cell">{item.description}</td>
                     {sectors.map((sector) => {
                       const operation = item.operations.find((op) => op.sectorId === sector.id);
                       if (!operation) {
-                        return <td key={`${item.id}-${sector.id}`}>-</td>;
+                        return (
+                          <td key={`${item.id}-${sector.id}`} className="operation-cell empty">
+                            -
+                          </td>
+                        );
                       }
                       const availableQuantity = Math.max(
                         0,
@@ -224,7 +230,8 @@ function OrderDetailPage() {
                       const hasPreviousSector = (sectorPositionById[sector.id] ?? 0) > 0;
 
                       return (
-                        <td key={cellKey}>
+                        <td key={cellKey} className="operation-cell">
+                          <div className="operation-card">
                           <div className="qty-legend">
                             <span className="qty-chip released">Liberada: {operation.releasedQuantity}</span>
                             <span className="qty-chip completed">Baixada: {operation.completedQuantity}</span>
@@ -309,6 +316,7 @@ function OrderDetailPage() {
                           </div>
                           {cellErrors[cellKey] ? <small className="error">{cellErrors[cellKey]}</small> : null}
                           <small>{operation.usefulMinutes ? `${operation.usefulMinutes} min` : "-"}</small>
+                          </div>
                         </td>
                       );
                     })}
