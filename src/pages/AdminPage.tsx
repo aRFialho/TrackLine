@@ -1,5 +1,16 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useProductionStore } from "../store/useProductionStore";
+import type { ProductionDayCode } from "../types";
+
+const productionDayOptions: Array<{ code: ProductionDayCode; label: string }> = [
+  { code: "MON", label: "Segunda" },
+  { code: "TUE", label: "Terca" },
+  { code: "WED", label: "Quarta" },
+  { code: "THU", label: "Quinta" },
+  { code: "FRI", label: "Sexta" },
+  { code: "SAT", label: "Sabado" },
+  { code: "SUN", label: "Domingo" }
+];
 
 function AdminPage() {
   const {
@@ -24,6 +35,9 @@ function AdminPage() {
   const [editingName, setEditingName] = useState("");
   const [editingSectorIds, setEditingSectorIds] = useState<string[]>([]);
   const [sectorOrder, setSectorOrder] = useState<string[]>([]);
+  const selectedProductionDays = schedule.productionDays?.length
+    ? schedule.productionDays
+    : (["MON", "TUE", "WED", "THU", "FRI"] as ProductionDayCode[]);
 
   useEffect(() => {
     if (employeeSectorIds.length === 0 && sectors[0]?.id) {
@@ -182,6 +196,32 @@ function AdminPage() {
                 value={schedule.lunchEnd}
                 onChange={(event) => void updateSchedule({ ...schedule, lunchEnd: event.target.value })}
               />
+            </label>
+            <label className="full">
+              Dias de producao (usados no calculo de tempo medio)
+              <div className="sector-check-list">
+                {productionDayOptions.map((option) => {
+                  const checked = selectedProductionDays.includes(option.code);
+                  return (
+                    <label key={option.code} className="sector-check-item">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(event) => {
+                          const nextDays = event.target.checked
+                            ? [...new Set([...selectedProductionDays, option.code])]
+                            : selectedProductionDays.filter((code) => code !== option.code);
+                          if (nextDays.length === 0) {
+                            return;
+                          }
+                          void updateSchedule({ ...schedule, productionDays: nextDays });
+                        }}
+                      />
+                      {option.label}
+                    </label>
+                  );
+                })}
+              </div>
             </label>
           </div>
         </div>

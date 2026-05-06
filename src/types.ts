@@ -17,7 +17,10 @@ export type WorkSchedule = {
   workEnd: string;
   lunchStart: string;
   lunchEnd: string;
+  productionDays: ProductionDayCode[];
 };
+
+export type ProductionDayCode = "MON" | "TUE" | "WED" | "THU" | "FRI" | "SAT" | "SUN";
 
 export type ItemOperation = {
   sectorId: string;

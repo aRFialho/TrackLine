@@ -39,6 +39,24 @@ const pool = new Pool({
 
 const sseClients = new Set();
 
+const DEFAULT_PRODUCTION_DAYS = ["MON", "TUE", "WED", "THU", "FRI"];
+const DAY_CODE_TO_INDEX = {
+  SUN: 0,
+  MON: 1,
+  TUE: 2,
+  WED: 3,
+  THU: 4,
+  FRI: 5,
+  SAT: 6
+};
+const defaultSchedule = {
+  workStart: "08:00",
+  workEnd: "18:00",
+  lunchStart: "12:00",
+  lunchEnd: "13:00",
+  productionDays: [...DEFAULT_PRODUCTION_DAYS]
+};
+
 function signAccessToken(user) {
   return jwt.sign(
     {
@@ -86,11 +104,21 @@ function broadcastRefresh() {
   }
 }
 
+const parseProductionDays = (value) => {
+  const values = Array.isArray(value) ? value : [];
+  const normalized = values
+    .map((item) => String(item || "").trim().toUpperCase())
+    .filter((item) => Object.prototype.hasOwnProperty.call(DAY_CODE_TO_INDEX, item));
+  const unique = Array.from(new Set(normalized));
+  return unique.length > 0 ? unique : [...DEFAULT_PRODUCTION_DAYS];
+};
+
 const mapSchedule = (row) => ({
   workStart: String(row.work_start).slice(0, 5),
   workEnd: String(row.work_end).slice(0, 5),
   lunchStart: String(row.lunch_start).slice(0, 5),
-  lunchEnd: String(row.lunch_end).slice(0, 5)
+  lunchEnd: String(row.lunch_end).slice(0, 5),
+  productionDays: parseProductionDays(row.production_days)
 });
 
 const clampDate = (date, start, end) => {
@@ -118,6 +146,7 @@ const minutesBetween = (start, end) => {
 const calculateUsefulMinutes = (startIso, endIso, schedule) => {
   let cursor = dayjs(startIso);
   const end = dayjs(endIso);
+  const workingDayIndexes = new Set(parseProductionDays(schedule.productionDays).map((code) => DAY_CODE_TO_INDEX[code]));
 
   if (!end.isAfter(cursor)) {
     return 0;
@@ -126,6 +155,13 @@ const calculateUsefulMinutes = (startIso, endIso, schedule) => {
   let total = 0;
   while (cursor.startOf("day").isBefore(end) || cursor.isSame(end, "day")) {
     const base = cursor.startOf("day");
+    if (!workingDayIndexes.has(base.day())) {
+      cursor = base.add(1, "day");
+      if (cursor.isAfter(end)) {
+        break;
+      }
+      continue;
+    }
     const workStart = dailyRange(base, schedule.workStart);
     const workEnd = dailyRange(base, schedule.workEnd);
     const lunchStart = dailyRange(base, schedule.lunchStart);
@@ -314,7 +350,7 @@ async function recomputeOrderStatus(client, orderId) {
 async function loadSnapshot(client) {
   const [scheduleRs, sectorsRs, employeesRs, ordersRs, itemsRs, operationsRs, notificationsRs] = await Promise.all([
     client.query(
-      "SELECT work_start, work_end, lunch_start, lunch_end FROM public.work_schedules ORDER BY created_at ASC LIMIT 1;"
+      "SELECT work_start, work_end, lunch_start, lunch_end, production_days FROM public.work_schedules ORDER BY created_at ASC LIMIT 1;"
     ),
     client.query("SELECT id, name FROM public.sectors ORDER BY position ASC, created_at ASC;"),
     client.query(`
@@ -368,14 +404,7 @@ async function loadSnapshot(client) {
   ]);
 
   const scheduleRow = scheduleRs.rows[0];
-  const schedule = scheduleRow
-    ? mapSchedule(scheduleRow)
-    : {
-        workStart: "08:00",
-        workEnd: "18:00",
-        lunchStart: "12:00",
-        lunchEnd: "13:00"
-      };
+  const schedule = scheduleRow ? mapSchedule(scheduleRow) : defaultSchedule;
 
   const sectors = sectorsRs.rows.map((row) => ({
     id: row.id,
@@ -572,9 +601,14 @@ app.get("/bootstrap", requireAuth, async (_req, res) => {
 });
 
 app.post("/schedule", requireAuth, requireAdmin, async (req, res) => {
-  const { workStart, workEnd, lunchStart, lunchEnd } = req.body ?? {};
+  const { workStart, workEnd, lunchStart, lunchEnd, productionDays } = req.body ?? {};
   if (!workStart || !workEnd || !lunchStart || !lunchEnd) {
     res.status(400).json({ message: "Horario invalido." });
+    return;
+  }
+  const normalizedProductionDays = parseProductionDays(productionDays);
+  if (normalizedProductionDays.length === 0) {
+    res.status(400).json({ message: "Selecione pelo menos um dia de producao." });
     return;
   }
 
@@ -584,13 +618,13 @@ app.post("/schedule", requireAuth, requireAdmin, async (req, res) => {
     const existing = await client.query("SELECT id FROM public.work_schedules ORDER BY created_at ASC LIMIT 1;");
     if (existing.rows[0]) {
       await client.query(
-        "UPDATE public.work_schedules SET work_start=$1, work_end=$2, lunch_start=$3, lunch_end=$4, updated_at=NOW() WHERE id=$5;",
-        [workStart, workEnd, lunchStart, lunchEnd, existing.rows[0].id]
+        "UPDATE public.work_schedules SET work_start=$1, work_end=$2, lunch_start=$3, lunch_end=$4, production_days=$5::text[], updated_at=NOW() WHERE id=$6;",
+        [workStart, workEnd, lunchStart, lunchEnd, normalizedProductionDays, existing.rows[0].id]
       );
     } else {
       await client.query(
-        "INSERT INTO public.work_schedules (work_start, work_end, lunch_start, lunch_end) VALUES ($1, $2, $3, $4);",
-        [workStart, workEnd, lunchStart, lunchEnd]
+        "INSERT INTO public.work_schedules (work_start, work_end, lunch_start, lunch_end, production_days) VALUES ($1, $2, $3, $4, $5::text[]);",
+        [workStart, workEnd, lunchStart, lunchEnd, normalizedProductionDays]
       );
     }
     await client.query("COMMIT");
@@ -1084,9 +1118,9 @@ app.post("/operations/toggle", requireAuth, async (req, res) => {
       }
       const now = new Date().toISOString();
       const scheduleRs = await client.query(
-        "SELECT work_start, work_end, lunch_start, lunch_end FROM public.work_schedules ORDER BY created_at ASC LIMIT 1;"
+        "SELECT work_start, work_end, lunch_start, lunch_end, production_days FROM public.work_schedules ORDER BY created_at ASC LIMIT 1;"
       );
-      const schedule = mapSchedule(scheduleRs.rows[0]);
+      const schedule = scheduleRs.rows[0] ? mapSchedule(scheduleRs.rows[0]) : defaultSchedule;
       const completionResult = await completeOperation(client, operation, employeeId, schedule, now);
       notificationEmployeeId = employeeId;
       notificationAction = "CONFIRM_OPERATION";
@@ -1150,9 +1184,9 @@ app.post("/operations/batch-toggle", requireAuth, async (req, res) => {
     await client.query("BEGIN");
 
     const scheduleRs = await client.query(
-      "SELECT work_start, work_end, lunch_start, lunch_end FROM public.work_schedules ORDER BY created_at ASC LIMIT 1;"
+      "SELECT work_start, work_end, lunch_start, lunch_end, production_days FROM public.work_schedules ORDER BY created_at ASC LIMIT 1;"
     );
-    const schedule = mapSchedule(scheduleRs.rows[0]);
+    const schedule = scheduleRs.rows[0] ? mapSchedule(scheduleRs.rows[0]) : defaultSchedule;
     const nowIso = new Date().toISOString();
 
     const baseSelect = `

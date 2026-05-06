@@ -58,7 +58,8 @@ const defaultSchedule: WorkSchedule = {
   workStart: "08:00",
   workEnd: "18:00",
   lunchStart: "12:00",
-  lunchEnd: "13:00"
+  lunchEnd: "13:00",
+  productionDays: ["MON", "TUE", "WED", "THU", "FRI"]
 };
 
 let disconnectRealtime: (() => void) | undefined;
