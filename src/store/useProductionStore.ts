@@ -1,5 +1,12 @@
 import { create } from "zustand";
-import type { Employee, ProductionNotification, ProductionOrder, Sector, WorkSchedule } from "../types";
+import type {
+  BatchOperationMode,
+  Employee,
+  ProductionNotification,
+  ProductionOrder,
+  Sector,
+  WorkSchedule
+} from "../types";
 import type { ImportedRow } from "../lib/importers";
 import { api, connectRealtime, type BootstrapSnapshot } from "../lib/api";
 
@@ -17,6 +24,7 @@ type StoreState = {
   resetStore: () => void;
   bootstrap: () => Promise<void>;
   addSector: (name: string) => Promise<void>;
+  reorderSectors: (sectorIds: string[]) => Promise<void>;
   addEmployee: (name: string, sectorIds: string[]) => Promise<void>;
   updateEmployee: (employeeId: string, name: string, sectorIds: string[]) => Promise<void>;
   deleteEmployee: (employeeId: string) => Promise<void>;
@@ -30,6 +38,16 @@ type StoreState = {
     sectorId: string;
     employeeId: string;
     done: boolean;
+    reason?: string;
+  }) => Promise<void>;
+  batchSetOperations: (payload: {
+    orderId: string;
+    sectorId: string;
+    employeeId: string;
+    mode: BatchOperationMode;
+    itemId?: string;
+    description?: string;
+    quantity?: number;
   }) => Promise<void>;
 };
 
@@ -120,6 +138,7 @@ export const useProductionStore = create<StoreState>()((set) => ({
     }
   },
   addSector: async (name) => runMutation(set, () => api.addSector(name)),
+  reorderSectors: async (sectorIds) => runMutation(set, () => api.reorderSectors(sectorIds)),
   addEmployee: async (name, sectorIds) => runMutation(set, () => api.addEmployee(name, sectorIds)),
   updateEmployee: async (employeeId, name, sectorIds) => runMutation(set, () => api.updateEmployee(employeeId, name, sectorIds)),
   deleteEmployee: async (employeeId) => runMutation(set, () => api.deleteEmployee(employeeId)),
@@ -127,14 +146,24 @@ export const useProductionStore = create<StoreState>()((set) => ({
   createOrder: async (payload) => runMutation(set, () => api.createOrder(payload)),
   deleteOrder: async (orderId) => runMutation(set, () => api.deleteOrder(orderId)),
   finalizeOrder: async (orderId) => runMutation(set, () => api.finalizeOrder(orderId)),
-  setOperationDone: async ({ itemId, sectorId, employeeId, done }) => {
+  setOperationDone: async ({ itemId, sectorId, employeeId, done, reason }) => {
     set({ error: undefined });
     suppressRealtimeUntil = Date.now() + 1800;
     try {
-      const snapshot = await api.setOperationDone({ itemId, sectorId, employeeId, done });
+      const snapshot = await api.setOperationDone({ itemId, sectorId, employeeId, done, reason });
       applySnapshot(set, snapshot);
     } catch (error) {
       set({ error: error instanceof Error ? error.message : "Falha ao atualizar operacao." });
+    }
+  },
+  batchSetOperations: async ({ orderId, sectorId, employeeId, mode, itemId, description, quantity }) => {
+    set({ error: undefined });
+    suppressRealtimeUntil = Date.now() + 1800;
+    try {
+      const snapshot = await api.batchSetOperations({ orderId, sectorId, employeeId, mode, itemId, description, quantity });
+      applySnapshot(set, snapshot);
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : "Falha ao executar baixa em lote." });
     }
   }
 }));

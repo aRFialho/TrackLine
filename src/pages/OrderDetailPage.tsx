@@ -1,13 +1,15 @@
 import dayjs from "dayjs";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { exportOrderCsvSemicolon, exportOrderXlsxDetailed } from "../lib/exporters";
 import { useProductionStore } from "../store/useProductionStore";
 
 function OrderDetailPage() {
   const { orderId = "" } = useParams();
-  const { orders, sectors, employees, setOperationDone } = useProductionStore();
+  const { orders, sectors, employees, setOperationDone, batchSetOperations } = useProductionStore();
   const [selectedOperators, setSelectedOperators] = useState<Record<string, string>>({});
   const [cellErrors, setCellErrors] = useState<Record<string, string>>({});
+  const [runningBatchKey, setRunningBatchKey] = useState<string>("");
 
   const order = useMemo(() => orders.find((candidate) => candidate.id === orderId), [orders, orderId]);
   const employeesBySector = useMemo(
@@ -39,6 +41,14 @@ function OrderDetailPage() {
         <p>
           Criada em {dayjs(order.createdAt).format("DD/MM/YYYY HH:mm")} | Status {order.status}
         </p>
+        <div className="actions">
+          <button type="button" onClick={() => exportOrderCsvSemicolon(order, sectors, employees)}>
+            Exportar CSV (;)
+          </button>
+          <button type="button" onClick={() => exportOrderXlsxDetailed(order, sectors, employees)}>
+            Exportar Excel detalhado
+          </button>
+        </div>
       </header>
 
       <div className="card">
@@ -68,6 +78,7 @@ function OrderDetailPage() {
                     const availableEmployees = employeesBySector[sector.id] ?? [];
                     const cellKey = `${item.id}-${sector.id}`;
                     const selectedEmployeeId = selectedOperators[cellKey] ?? operation.employeeId ?? "";
+
                     return (
                       <td key={cellKey}>
                         <label className="op-check">
@@ -76,13 +87,25 @@ function OrderDetailPage() {
                             checked={operation.status === "CONCLUIDA"}
                             onChange={(event) => {
                               if (!event.target.checked) {
+                                const reason = window.prompt(
+                                  "Informe o motivo do retrocesso para retornar a operacao anterior:"
+                                );
+                                if (!reason || !reason.trim()) {
+                                  setCellErrors((current) => ({
+                                    ...current,
+                                    [cellKey]: "Motivo obrigatorio para retornar operacao."
+                                  }));
+                                  return;
+                                }
+
                                 setCellErrors((current) => ({ ...current, [cellKey]: "" }));
                                 void setOperationDone({
                                   orderId: order.id,
                                   itemId: item.id,
                                   sectorId: sector.id,
                                   employeeId: "",
-                                  done: false
+                                  done: false,
+                                  reason: reason.trim()
                                 });
                                 return;
                               }
@@ -107,6 +130,34 @@ function OrderDetailPage() {
                           />
                           {operation.status}
                         </label>
+                        {operation.status === "CONCLUIDA" ? (
+                          <button
+                            className="mini-btn ghost"
+                            onClick={() => {
+                              const reason = window.prompt(
+                                "Motivo obrigatorio para retornar para a operacao anterior:"
+                              );
+                              if (!reason || !reason.trim()) {
+                                setCellErrors((current) => ({
+                                  ...current,
+                                  [cellKey]: "Motivo obrigatorio para retornar operacao."
+                                }));
+                                return;
+                              }
+                              setCellErrors((current) => ({ ...current, [cellKey]: "" }));
+                              void setOperationDone({
+                                orderId: order.id,
+                                itemId: item.id,
+                                sectorId: sector.id,
+                                employeeId: "",
+                                done: false,
+                                reason: reason.trim()
+                              });
+                            }}
+                          >
+                            Retornar operacao anterior
+                          </button>
+                        ) : null}
                         <select
                           value={selectedEmployeeId}
                           onChange={(event) => {
@@ -132,6 +183,69 @@ function OrderDetailPage() {
                             </option>
                           ))}
                         </select>
+                        <div className="batch-actions">
+                          <button
+                            className="mini-btn"
+                            disabled={!selectedEmployeeId || operation.status === "CONCLUIDA"}
+                            onClick={() => {
+                              setRunningBatchKey(`${cellKey}-single`);
+                              void batchSetOperations({
+                                orderId: order.id,
+                                sectorId: sector.id,
+                                employeeId: selectedEmployeeId,
+                                mode: "SINGLE_ITEM",
+                                itemId: item.id
+                              }).finally(() => setRunningBatchKey(""));
+                            }}
+                          >
+                            {runningBatchKey === `${cellKey}-single` ? "..." : "Baixa item"}
+                          </button>
+                          <button
+                            className="mini-btn ghost"
+                            disabled={!selectedEmployeeId}
+                            onClick={() => {
+                              setRunningBatchKey(`${cellKey}-lot`);
+                              void batchSetOperations({
+                                orderId: order.id,
+                                sectorId: sector.id,
+                                employeeId: selectedEmployeeId,
+                                mode: "FULL_LOT",
+                                description: item.description
+                              }).finally(() => setRunningBatchKey(""));
+                            }}
+                          >
+                            {runningBatchKey === `${cellKey}-lot` ? "..." : "Baixa lote"}
+                          </button>
+                          <button
+                            className="mini-btn ghost"
+                            disabled={!selectedEmployeeId}
+                            onClick={() => {
+                              const raw = window.prompt(`Quantidade para baixar no lote "${item.description}":`, "1");
+                              if (!raw) {
+                                return;
+                              }
+                              const nextQty = Number(raw);
+                              if (!Number.isFinite(nextQty) || nextQty <= 0) {
+                                setCellErrors((current) => ({
+                                  ...current,
+                                  [cellKey]: "Quantidade personalizada invalida."
+                                }));
+                                return;
+                              }
+                              setRunningBatchKey(`${cellKey}-qty`);
+                              void batchSetOperations({
+                                orderId: order.id,
+                                sectorId: sector.id,
+                                employeeId: selectedEmployeeId,
+                                mode: "CUSTOM_QUANTITY",
+                                description: item.description,
+                                quantity: nextQty
+                              }).finally(() => setRunningBatchKey(""));
+                            }}
+                          >
+                            {runningBatchKey === `${cellKey}-qty` ? "..." : "Baixa quantidade"}
+                          </button>
+                        </div>
                         {cellErrors[cellKey] ? <small className="error">{cellErrors[cellKey]}</small> : null}
                         <small>{operation.usefulMinutes ? `${operation.usefulMinutes} min` : "-"}</small>
                       </td>

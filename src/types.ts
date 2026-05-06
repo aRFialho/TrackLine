@@ -48,7 +48,11 @@ export type ProductionOrder = {
   items: ProductionItem[];
 };
 
-export type NotificationAction = "CONFIRM_OPERATION" | "UNCONFIRM_OPERATION";
+export type NotificationAction =
+  | "CONFIRM_OPERATION"
+  | "UNCONFIRM_OPERATION"
+  | "ROLLBACK_OPERATION"
+  | "BATCH_OPERATION";
 
 export type ProductionNotification = {
   id: string;
@@ -61,5 +65,11 @@ export type ProductionNotification = {
   unit: string;
   sectorName: string;
   employeeName?: string;
+  rollbackReason?: string;
+  batchMode?: "SINGLE_ITEM" | "FULL_LOT" | "CUSTOM_QUANTITY";
+  requestedQuantity?: number;
+  processedQuantity?: number;
   createdAt: string;
 };
+
+export type BatchOperationMode = "SINGLE_ITEM" | "FULL_LOT" | "CUSTOM_QUANTITY";

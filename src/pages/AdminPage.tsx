@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { useProductionStore } from "../store/useProductionStore";
 
 function AdminPage() {
-  const { schedule, sectors, employees, addSector, addEmployee, updateEmployee, deleteEmployee, updateSchedule } =
+  const { schedule, sectors, employees, addSector, reorderSectors, addEmployee, updateEmployee, deleteEmployee, updateSchedule } =
     useProductionStore();
   const [sectorName, setSectorName] = useState("");
   const [employeeName, setEmployeeName] = useState("");
@@ -10,12 +10,17 @@ function AdminPage() {
   const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
   const [editingSectorIds, setEditingSectorIds] = useState<string[]>([]);
+  const [sectorOrder, setSectorOrder] = useState<string[]>([]);
 
   useEffect(() => {
     if (employeeSectorIds.length === 0 && sectors[0]?.id) {
       setEmployeeSectorIds([sectors[0].id]);
     }
   }, [employeeSectorIds.length, sectors]);
+
+  useEffect(() => {
+    setSectorOrder(sectors.map((sector) => sector.id));
+  }, [sectors]);
 
   const submitSector = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -68,6 +73,23 @@ function AdminPage() {
     if (editingEmployeeId === employeeId) {
       cancelEditing();
     }
+  };
+
+  const moveSector = (sectorId: string, direction: "up" | "down") => {
+    setSectorOrder((current) => {
+      const index = current.indexOf(sectorId);
+      if (index < 0) {
+        return current;
+      }
+      const targetIndex = direction === "up" ? index - 1 : index + 1;
+      if (targetIndex < 0 || targetIndex >= current.length) {
+        return current;
+      }
+      const next = [...current];
+      const [removed] = next.splice(index, 1);
+      next.splice(targetIndex, 0, removed);
+      return next;
+    });
   };
 
   return (
@@ -130,6 +152,35 @@ function AdminPage() {
               <li key={sector.id}>{sector.name}</li>
             ))}
           </ul>
+          <hr />
+          <h3>Fluxo de producao (sem pular etapas)</h3>
+          <p className="muted-line">Defina da primeira ate a ultima etapa. O sistema bloqueia conclusao fora da sequencia.</p>
+          <div className="flow-list">
+            {sectorOrder.map((sectorId, index) => {
+              const sector = sectors.find((row) => row.id === sectorId);
+              if (!sector) {
+                return null;
+              }
+              return (
+                <div key={sector.id} className="flow-item">
+                  <strong>
+                    {index + 1}. {sector.name}
+                  </strong>
+                  <div className="actions">
+                    <button className="mini-btn ghost" onClick={() => moveSector(sector.id, "up")}>
+                      Subir
+                    </button>
+                    <button className="mini-btn ghost" onClick={() => moveSector(sector.id, "down")}>
+                      Descer
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <button type="button" onClick={() => void reorderSectors(sectorOrder)}>
+            Salvar fluxo
+          </button>
         </div>
       </div>
 

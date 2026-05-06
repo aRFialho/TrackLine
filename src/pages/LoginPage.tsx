@@ -1,6 +1,12 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { useAuthStore } from "../store/useAuthStore";
+
+const loadingHints = [
+  "Validando credenciais...",
+  "Conectando no painel de producao...",
+  "Sincronizando setores e operacoes..."
+];
 
 function LoginPage() {
   const { token, login, loading, error, rememberMe } = useAuthStore();
@@ -8,6 +14,18 @@ function LoginPage() {
   const [password, setPassword] = useState("");
   const [shouldRemember, setShouldRemember] = useState(rememberMe);
   const [localError, setLocalError] = useState("");
+  const [hintIndex, setHintIndex] = useState(0);
+
+  useEffect(() => {
+    if (!loading) {
+      setHintIndex(0);
+      return;
+    }
+    const interval = window.setInterval(() => {
+      setHintIndex((current) => (current + 1) % loadingHints.length);
+    }, 850);
+    return () => window.clearInterval(interval);
+  }, [loading]);
 
   if (token) {
     return <Navigate to="/ops" replace />;
@@ -32,7 +50,9 @@ function LoginPage() {
   return (
     <section className="login-screen">
       <div className="login-card">
-        <img src="/TL.png" alt="TrackLine logo" />
+        <div className={`login-logo-wrap ${loading ? "is-loading" : ""}`}>
+          <img src="/TL.png" alt="TrackLine logo" />
+        </div>
         <h1>TrackLine</h1>
         <p>Acesse com sua conta de administrador.</p>
         <form onSubmit={handleSubmit}>
@@ -53,9 +73,17 @@ function LoginPage() {
             Salvar login e continuar logado
           </label>
           <button disabled={loading} type="submit">
-            {loading ? "Entrando..." : "Entrar"}
+            {loading ? (
+              <span className="login-loading-inline">
+                <span className="mini-spin" />
+                Entrando...
+              </span>
+            ) : (
+              "Entrar"
+            )}
           </button>
         </form>
+        {loading ? <p className="login-hint">{loadingHints[hintIndex]}</p> : null}
         {localError ? <p className="error">{localError}</p> : null}
         {error ? <p className="error">{error}</p> : null}
       </div>

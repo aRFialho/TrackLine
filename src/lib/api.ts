@@ -1,4 +1,11 @@
-import type { Employee, ProductionNotification, ProductionOrder, Sector, WorkSchedule } from "../types";
+import type {
+  BatchOperationMode,
+  Employee,
+  ProductionNotification,
+  ProductionOrder,
+  Sector,
+  WorkSchedule
+} from "../types";
 import type { ImportedRow } from "./importers";
 
 export type BootstrapSnapshot = {
@@ -148,9 +155,27 @@ export const api = {
     request<BootstrapSnapshot>(`/orders/${orderId}`, {
       method: "DELETE"
     }),
-  setOperationDone: (payload: { itemId: string; sectorId: string; employeeId: string; done: boolean }) =>
+  setOperationDone: (payload: { itemId: string; sectorId: string; employeeId: string; done: boolean; reason?: string }) =>
     request<BootstrapSnapshot>("/operations/toggle", {
       method: "POST",
       body: JSON.stringify(payload)
+    }),
+  batchSetOperations: (payload: {
+    orderId: string;
+    sectorId: string;
+    employeeId: string;
+    mode: BatchOperationMode;
+    itemId?: string;
+    description?: string;
+    quantity?: number;
+  }) =>
+    request<BootstrapSnapshot>("/operations/batch-toggle", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  reorderSectors: (sectorIds: string[]) =>
+    request<BootstrapSnapshot>("/sectors/reorder", {
+      method: "POST",
+      body: JSON.stringify({ sectorIds })
     })
 };

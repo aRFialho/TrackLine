@@ -87,7 +87,7 @@ if (!electron?.app || !electron?.BrowserWindow) {
       minHeight: 700,
       title: "TrackLine",
       autoHideMenuBar: true,
-      icon: path.join(__dirname, "..", "public", "TL.png"),
+      icon: isDev ? path.join(__dirname, "..", "public", "TL.png") : path.join(__dirname, "..", "dist", "TL.png"),
       webPreferences: {
         preload: path.join(__dirname, "preload.cjs"),
         additionalArguments

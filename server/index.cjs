@@ -151,6 +151,84 @@ const calculateUsefulMinutes = (startIso, endIso, schedule) => {
   return total;
 };
 
+const parsePositiveNumber = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return undefined;
+  }
+  return parsed;
+};
+
+async function assertPreviousSectorsDone(client, itemId, sectorPosition) {
+  const pendingPreviousRs = await client.query(
+    `
+    SELECT COUNT(*)::int AS pending_count
+    FROM public.item_operations io
+    JOIN public.sectors s ON s.id = io.sector_id
+    WHERE io.item_id = $1
+      AND s.position < $2
+      AND io.status <> 'CONCLUIDA';
+    `,
+    [itemId, sectorPosition]
+  );
+
+  if (Number(pendingPreviousRs.rows[0]?.pending_count || 0) > 0) {
+    throw new Error("Nao e permitido pular etapas. Conclua os setores anteriores antes.");
+  }
+}
+
+async function completeOperation(client, operation, employeeId, schedule, nowIso) {
+  await assertPreviousSectorsDone(client, operation.item_id, operation.sector_position);
+
+  const previousSectorRs = await client.query(
+    `
+    SELECT io.finished_at
+    FROM public.item_operations io
+    JOIN public.sectors s ON s.id = io.sector_id
+    WHERE io.item_id = $1
+      AND s.position < $2
+      AND io.finished_at IS NOT NULL
+    ORDER BY s.position DESC
+    LIMIT 1;
+    `,
+    [operation.item_id, operation.sector_position]
+  );
+
+  const previousFinishedAt = previousSectorRs.rows[0]?.finished_at
+    ? previousSectorRs.rows[0].finished_at.toISOString()
+    : undefined;
+
+  const startedAt = operation.started_at
+    ? operation.started_at.toISOString()
+    : previousFinishedAt || operation.released_at.toISOString();
+
+  const usefulMinutes = calculateUsefulMinutes(startedAt, nowIso, schedule);
+  await client.query(
+    "UPDATE public.item_operations SET employee_id=$1, status='CONCLUIDA', started_at=COALESCE(started_at, $2::timestamptz), finished_at=$3, useful_minutes=$4 WHERE id=$5;",
+    [employeeId, startedAt, nowIso, usefulMinutes, operation.id]
+  );
+
+  const nextOperationRs = await client.query(
+    `
+    SELECT io.id
+    FROM public.item_operations io
+    JOIN public.sectors s ON s.id = io.sector_id
+    WHERE io.item_id = $1
+      AND s.position > $2
+      AND io.status = 'PENDENTE'
+    ORDER BY s.position ASC
+    LIMIT 1;
+    `,
+    [operation.item_id, operation.sector_position]
+  );
+
+  if (nextOperationRs.rows[0]) {
+    await client.query("UPDATE public.item_operations SET released_at = $1 WHERE id = $2;", [nowIso, nextOperationRs.rows[0].id]);
+  }
+
+  return usefulMinutes;
+}
+
 async function loadSnapshot(client) {
   const [scheduleRs, sectorsRs, employeesRs, ordersRs, itemsRs, operationsRs, notificationsRs] = await Promise.all([
     client.query(
@@ -183,6 +261,10 @@ async function loadSnapshot(client) {
       SELECT n.id,
              n.action,
              n.item_id,
+             n.rollback_reason,
+             n.batch_mode,
+             n.requested_quantity,
+             n.processed_quantity,
              n.created_at,
              u.email AS actor_email,
              po.number AS order_number,
@@ -274,6 +356,12 @@ async function loadSnapshot(client) {
     unit: row.unit,
     sectorName: row.sector_name,
     employeeName: row.employee_name || undefined,
+    rollbackReason: row.rollback_reason || undefined,
+    batchMode: row.batch_mode || undefined,
+    requestedQuantity:
+      typeof row.requested_quantity === "number" ? Number(row.requested_quantity) : row.requested_quantity ? Number(row.requested_quantity) : undefined,
+    processedQuantity:
+      typeof row.processed_quantity === "number" ? Number(row.processed_quantity) : row.processed_quantity ? Number(row.processed_quantity) : undefined,
     createdAt: row.created_at.toISOString()
   }));
 
@@ -444,6 +532,40 @@ app.post("/sectors", requireAuth, requireAdmin, async (req, res) => {
       String(name).trim(),
       Number(positionRs.rows[0].next_position)
     ]);
+    await client.query("COMMIT");
+    broadcastRefresh();
+    const snapshot = await loadSnapshot(client);
+    res.json(snapshot);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/sectors/reorder", requireAuth, requireAdmin, async (req, res) => {
+  const sectorIds = Array.isArray(req.body?.sectorIds)
+    ? req.body.sectorIds.map((value) => String(value).trim()).filter(Boolean)
+    : [];
+
+  if (sectorIds.length === 0) {
+    res.status(400).json({ message: "Informe a ordem de setores." });
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const existingRs = await client.query("SELECT id FROM public.sectors ORDER BY created_at ASC;");
+    const existingIds = existingRs.rows.map((row) => row.id);
+    if (existingIds.length !== sectorIds.length || existingIds.some((id) => !sectorIds.includes(id))) {
+      throw new Error("Lista de setores invalida para reordenacao.");
+    }
+
+    for (let i = 0; i < sectorIds.length; i += 1) {
+      await client.query("UPDATE public.sectors SET position=$1 WHERE id=$2;", [i + 1, sectorIds[i]]);
+    }
     await client.query("COMMIT");
     broadcastRefresh();
     const snapshot = await loadSnapshot(client);
@@ -648,7 +770,7 @@ app.delete("/orders/:orderId", requireAuth, requireAdmin, async (req, res) => {
 });
 
 app.post("/operations/toggle", requireAuth, async (req, res) => {
-  const { itemId, sectorId, employeeId, done } = req.body ?? {};
+  const { itemId, sectorId, employeeId, done, reason } = req.body ?? {};
   if (!itemId || !sectorId || typeof done !== "boolean") {
     res.status(400).json({ message: "Payload de operacao invalido." });
     return;
@@ -683,14 +805,19 @@ app.post("/operations/toggle", requireAuth, async (req, res) => {
 
     let notificationEmployeeId = null;
     let notificationAction = "UNCONFIRM_OPERATION";
+    let rollbackReason = null;
 
     if (!done) {
+      if (!String(reason ?? "").trim()) {
+        throw new Error("Informe o motivo para retornar a operacao.");
+      }
       await client.query(
         "UPDATE public.item_operations SET employee_id=NULL, status='PENDENTE', started_at=NULL, finished_at=NULL, useful_minutes=NULL WHERE id=$1;",
         [operation.id]
       );
       notificationEmployeeId = operation.previous_employee_id || null;
-      notificationAction = "UNCONFIRM_OPERATION";
+      notificationAction = "ROLLBACK_OPERATION";
+      rollbackReason = String(reason).trim();
     } else {
       if (!employeeId) {
         throw new Error("Selecione um funcionario.");
@@ -700,63 +827,19 @@ app.post("/operations/toggle", requireAuth, async (req, res) => {
         "SELECT work_start, work_end, lunch_start, lunch_end FROM public.work_schedules ORDER BY created_at ASC LIMIT 1;"
       );
       const schedule = mapSchedule(scheduleRs.rows[0]);
-      const previousSectorRs = await client.query(
-        `
-        SELECT io.finished_at
-        FROM public.item_operations io
-        JOIN public.sectors s ON s.id = io.sector_id
-        WHERE io.item_id = $1
-          AND s.position < $2
-          AND io.finished_at IS NOT NULL
-        ORDER BY s.position DESC
-        LIMIT 1;
-        `,
-        [operation.item_id, operation.sector_position]
-      );
-
-      const previousFinishedAt = previousSectorRs.rows[0]?.finished_at
-        ? previousSectorRs.rows[0].finished_at.toISOString()
-        : undefined;
-
-      const startedAt = operation.started_at
-        ? operation.started_at.toISOString()
-        : previousFinishedAt || operation.released_at.toISOString();
-      const usefulMinutes = calculateUsefulMinutes(startedAt, now, schedule);
-      await client.query(
-        "UPDATE public.item_operations SET employee_id=$1, status='CONCLUIDA', started_at=COALESCE(started_at, $2::timestamptz), finished_at=$3, useful_minutes=$4 WHERE id=$5;",
-        [employeeId, startedAt, now, usefulMinutes, operation.id]
-      );
-
-      const nextOperationRs = await client.query(
-        `
-        SELECT io.id
-        FROM public.item_operations io
-        JOIN public.sectors s ON s.id = io.sector_id
-        WHERE io.item_id = $1
-          AND s.position > $2
-          AND io.status = 'PENDENTE'
-        ORDER BY s.position ASC
-        LIMIT 1;
-        `,
-        [operation.item_id, operation.sector_position]
-      );
-
-      if (nextOperationRs.rows[0]) {
-        await client.query("UPDATE public.item_operations SET released_at = $1 WHERE id = $2;", [
-          now,
-          nextOperationRs.rows[0].id
-        ]);
-      }
+      await completeOperation(client, operation, employeeId, schedule, now);
       notificationEmployeeId = employeeId;
       notificationAction = "CONFIRM_OPERATION";
     }
 
     await client.query(
       `
-      INSERT INTO public.operation_notifications (action, actor_user_id, order_id, item_id, sector_id, employee_id)
-      VALUES ($1, $2, $3, $4, $5, $6);
+      INSERT INTO public.operation_notifications (
+        action, actor_user_id, order_id, item_id, sector_id, employee_id, rollback_reason
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7);
       `,
-      [notificationAction, req.auth.sub, operation.order_id, operation.item_id, operation.sector_id, notificationEmployeeId]
+      [notificationAction, req.auth.sub, operation.order_id, operation.item_id, operation.sector_id, notificationEmployeeId, rollbackReason]
     );
 
     const orderStatusRs = await client.query(
@@ -777,6 +860,241 @@ app.post("/operations/toggle", requireAuth, async (req, res) => {
 
     if (orderStatusRs.rows[0]) {
       const orderId = orderStatusRs.rows[0].order_id;
+      const nextStatus = orderStatusRs.rows[0].next_status;
+      await client.query(
+        "UPDATE public.production_orders SET status=$1::order_status, finished_at=CASE WHEN $1::order_status='FINALIZADA'::order_status THEN COALESCE(finished_at, NOW()) ELSE NULL END WHERE id=$2;",
+        [nextStatus, orderId]
+      );
+    }
+
+    await client.query("COMMIT");
+    broadcastRefresh();
+    const snapshot = await loadSnapshot(client);
+    res.json(snapshot);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/operations/batch-toggle", requireAuth, async (req, res) => {
+  const { orderId, sectorId, employeeId, mode, itemId, description, quantity } = req.body ?? {};
+  const batchMode = String(mode || "");
+  if (!orderId || !sectorId || !employeeId || !["SINGLE_ITEM", "FULL_LOT", "CUSTOM_QUANTITY"].includes(batchMode)) {
+    res.status(400).json({ message: "Payload de baixa em lote invalido." });
+    return;
+  }
+
+  const parsedQuantity = parsePositiveNumber(quantity);
+  if (batchMode === "CUSTOM_QUANTITY" && !parsedQuantity) {
+    res.status(400).json({ message: "Informe uma quantidade valida para baixa personalizada." });
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const scheduleRs = await client.query(
+      "SELECT work_start, work_end, lunch_start, lunch_end FROM public.work_schedules ORDER BY created_at ASC LIMIT 1;"
+    );
+    const schedule = mapSchedule(scheduleRs.rows[0]);
+    const nowIso = new Date().toISOString();
+
+    const baseQuery = `
+      SELECT io.id,
+             io.item_id,
+             io.released_at,
+             io.started_at,
+             io.employee_id AS previous_employee_id,
+             s.position AS sector_position,
+             pi.order_id,
+             pi.quantity,
+             pi.unit,
+             pi.description
+      FROM public.item_operations io
+      JOIN public.production_items pi ON pi.id = io.item_id
+      JOIN public.sectors s ON s.id = io.sector_id
+      WHERE pi.order_id = $1
+        AND io.sector_id = $2
+        AND io.status = 'PENDENTE'
+    `;
+
+    let operationRows = [];
+    if (batchMode === "SINGLE_ITEM") {
+      if (!itemId) {
+        throw new Error("Selecione o item para baixa individual.");
+      }
+      const rs = await client.query(`${baseQuery} AND io.item_id = $3 ORDER BY pi.created_at ASC LIMIT 1;`, [
+        orderId,
+        sectorId,
+        itemId
+      ]);
+      operationRows = rs.rows;
+    } else {
+      const parsedDescription = String(description || "").trim();
+      if (!parsedDescription) {
+        throw new Error("Selecione a descricao do item para baixa em lote.");
+      }
+      const rs = await client.query(`${baseQuery} AND pi.description = $3 ORDER BY pi.created_at ASC;`, [
+        orderId,
+        sectorId,
+        parsedDescription
+      ]);
+      operationRows = rs.rows;
+    }
+
+    if (operationRows.length === 0) {
+      throw new Error("Nenhuma operacao pendente encontrada para os filtros informados.");
+    }
+
+    let processedQuantity = 0;
+    let remainingQuantity = batchMode === "CUSTOM_QUANTITY" ? parsedQuantity : undefined;
+    for (const operation of operationRows) {
+      if (batchMode === "CUSTOM_QUANTITY" && typeof remainingQuantity === "number" && remainingQuantity <= 0) {
+        break;
+      }
+
+      const itemQuantity = Number(operation.quantity);
+      if (batchMode === "CUSTOM_QUANTITY" && typeof remainingQuantity === "number" && remainingQuantity < itemQuantity) {
+        const splitQuantity = remainingQuantity;
+        const remainingAfterSplit = itemQuantity - splitQuantity;
+        const newItemRs = await client.query(
+          `
+          INSERT INTO public.production_items (order_id, quantity, unit, description)
+          VALUES ($1, $2, $3, $4)
+          RETURNING id;
+          `,
+          [operation.order_id, splitQuantity, operation.unit, operation.description]
+        );
+        const newItemId = newItemRs.rows[0].id;
+
+        const allOpsRs = await client.query(
+          `
+          SELECT io.sector_id,
+                 io.employee_id,
+                 io.status,
+                 io.released_at,
+                 io.started_at,
+                 io.finished_at,
+                 io.useful_minutes,
+                 s.position
+          FROM public.item_operations io
+          JOIN public.sectors s ON s.id = io.sector_id
+          WHERE io.item_id = $1
+          ORDER BY s.position ASC;
+          `,
+          [operation.item_id]
+        );
+
+        await client.query("UPDATE public.production_items SET quantity = $1 WHERE id = $2;", [remainingAfterSplit, operation.item_id]);
+
+        for (const oldOp of allOpsRs.rows) {
+          const statusToInsert = oldOp.position < operation.sector_position ? oldOp.status : "PENDENTE";
+          const startedAtToInsert = oldOp.position < operation.sector_position ? oldOp.started_at : null;
+          const finishedAtToInsert = oldOp.position < operation.sector_position ? oldOp.finished_at : null;
+          const employeeIdToInsert = oldOp.position < operation.sector_position ? oldOp.employee_id : null;
+          const usefulToInsert = oldOp.position < operation.sector_position ? oldOp.useful_minutes : null;
+          const releasedAtToInsert = oldOp.position <= operation.sector_position ? nowIso : oldOp.released_at;
+
+          await client.query(
+            `
+            INSERT INTO public.item_operations (
+              item_id, sector_id, employee_id, status, released_at, started_at, finished_at, useful_minutes
+            ) VALUES ($1, $2, $3, $4::operation_status, $5, $6, $7, $8);
+            `,
+            [
+              newItemId,
+              oldOp.sector_id,
+              employeeIdToInsert,
+              statusToInsert,
+              releasedAtToInsert,
+              startedAtToInsert,
+              finishedAtToInsert,
+              usefulToInsert
+            ]
+          );
+        }
+
+        const newCurrentOperationRs = await client.query(
+          `
+          SELECT io.id,
+                 io.item_id,
+                 io.released_at,
+                 io.started_at,
+                 s.position AS sector_position
+          FROM public.item_operations io
+          JOIN public.sectors s ON s.id = io.sector_id
+          WHERE io.item_id = $1 AND io.sector_id = $2
+          LIMIT 1;
+          `,
+          [newItemId, sectorId]
+        );
+
+        await completeOperation(client, newCurrentOperationRs.rows[0], employeeId, schedule, nowIso);
+        processedQuantity += splitQuantity;
+        remainingQuantity = 0;
+        continue;
+      }
+
+      await completeOperation(client, operation, employeeId, schedule, nowIso);
+      processedQuantity += itemQuantity;
+      if (typeof remainingQuantity === "number") {
+        remainingQuantity -= itemQuantity;
+      }
+    }
+
+    if (processedQuantity <= 0) {
+      throw new Error("Nenhuma quantidade foi processada para esta baixa.");
+    }
+
+    const refOperation = operationRows[0];
+    await client.query(
+      `
+      INSERT INTO public.operation_notifications (
+        action,
+        actor_user_id,
+        order_id,
+        item_id,
+        sector_id,
+        employee_id,
+        batch_mode,
+        requested_quantity,
+        processed_quantity
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
+      `,
+      [
+        "BATCH_OPERATION",
+        req.auth.sub,
+        orderId,
+        refOperation.item_id,
+        sectorId,
+        employeeId,
+        batchMode,
+        batchMode === "CUSTOM_QUANTITY" ? parsedQuantity : processedQuantity,
+        processedQuantity
+      ]
+    );
+
+    const orderStatusRs = await client.query(
+      `
+      SELECT po.id AS order_id,
+             CASE
+               WHEN BOOL_AND(io.status = 'CONCLUIDA') THEN 'FINALIZADA'
+               ELSE 'ABERTA'
+             END AS next_status
+      FROM public.production_orders po
+      JOIN public.production_items pi ON pi.order_id = po.id
+      JOIN public.item_operations io ON io.item_id = pi.id
+      WHERE po.id = $1
+      GROUP BY po.id;
+      `,
+      [orderId]
+    );
+
+    if (orderStatusRs.rows[0]) {
       const nextStatus = orderStatusRs.rows[0].next_status;
       await client.query(
         "UPDATE public.production_orders SET status=$1::order_status, finished_at=CASE WHEN $1::order_status='FINALIZADA'::order_status THEN COALESCE(finished_at, NOW()) ELSE NULL END WHERE id=$2;",
