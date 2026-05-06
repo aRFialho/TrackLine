@@ -44,7 +44,7 @@
     },
     "win": {
       "target": "nsis",
-      "icon": "public/TL.png",
+      "icon": "public/TL.ico",
       "signAndEditExecutable": false,
       "verifyUpdateCodeSignature": false
     },

@@ -75,6 +75,14 @@ if (!electron?.app || !electron?.BrowserWindow) {
     await waitForApiReady(apiPort);
   }
 
+  function resolveWindowIcon() {
+    const iconFile = process.platform === "win32" ? "TL.ico" : "TL.png";
+    if (isDev) {
+      return path.join(__dirname, "..", "public", iconFile);
+    }
+    return path.join(__dirname, "..", "dist", iconFile);
+  }
+
   function createWindow() {
     const additionalArguments = shouldUseEmbeddedApi
       ? [`--trackline-api-port=${apiPort}`]
@@ -87,7 +95,7 @@ if (!electron?.app || !electron?.BrowserWindow) {
       minHeight: 700,
       title: "TrackLine",
       autoHideMenuBar: true,
-      icon: isDev ? path.join(__dirname, "..", "public", "TL.png") : path.join(__dirname, "..", "dist", "TL.png"),
+      icon: resolveWindowIcon(),
       webPreferences: {
         preload: path.join(__dirname, "preload.cjs"),
         additionalArguments
@@ -103,6 +111,9 @@ if (!electron?.app || !electron?.BrowserWindow) {
   }
 
   app.whenReady().then(async () => {
+    if (process.platform === "win32") {
+      app.setAppUserModelId("com.trackline.app");
+    }
     await ensureEmbeddedApi();
     createWindow();
 
