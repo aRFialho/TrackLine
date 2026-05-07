@@ -369,7 +369,7 @@ async function loadSnapshot(client) {
       "SELECT id, number, name, status, created_at, opened_at, finished_at FROM public.production_orders ORDER BY created_at DESC;"
     ),
     client.query(
-      "SELECT id, order_id, quantity, unit, description FROM public.production_items ORDER BY created_at ASC;"
+      "SELECT id, order_id, quantity, unit, manufacturer_code, description FROM public.production_items ORDER BY created_at ASC;"
     ),
     client.query(
       "SELECT id, item_id, sector_id, employee_id, status, released_at, started_at, finished_at, useful_minutes, released_quantity, completed_quantity FROM public.item_operations ORDER BY created_at ASC;"
@@ -440,6 +440,7 @@ async function loadSnapshot(client) {
       id: row.id,
       quantity: Number(row.quantity),
       unit: row.unit,
+      manufacturerCode: row.manufacturer_code || undefined,
       description: row.description,
       operations: operationsByItem.get(row.id) || []
     });
@@ -918,14 +919,15 @@ app.post("/orders/import", requireAuth, requireAdmin, async (req, res) => {
     for (const row of rows) {
       const quantity = Number(row.quantity ?? 0);
       const unit = String(row.unit ?? "UN").trim() || "UN";
+      const manufacturerCode = String(row.manufacturerCode ?? "").trim();
       const description = String(row.description ?? "").trim();
       if (!description || quantity <= 0) {
         continue;
       }
 
       const itemRs = await client.query(
-        "INSERT INTO public.production_items (order_id, quantity, unit, description) VALUES ($1, $2, $3, $4) RETURNING id;",
-        [orderId, quantity, unit, description]
+        "INSERT INTO public.production_items (order_id, quantity, unit, manufacturer_code, description) VALUES ($1, $2, $3, $4, $5) RETURNING id;",
+        [orderId, quantity, unit, manufacturerCode || null, description]
       );
       const itemId = itemRs.rows[0].id;
 
@@ -983,7 +985,7 @@ app.delete("/orders/:orderId", requireAuth, requireAdmin, async (req, res) => {
 });
 
 app.post("/operations/toggle", requireAuth, async (req, res) => {
-  const { itemId, sectorId, employeeId, done, reason, quantity } = req.body ?? {};
+  const { itemId, sectorId, employeeId, done, reason, quantity, targetSectorId } = req.body ?? {};
   if (!itemId || !sectorId || typeof done !== "boolean") {
     res.status(400).json({ message: "Payload de operacao invalido." });
     return;
@@ -1036,7 +1038,7 @@ app.post("/operations/toggle", requireAuth, async (req, res) => {
         throw new Error("Informe uma quantidade valida para retorno.");
       }
 
-      const { releasedQuantity, completedQuantity } = readOperationQuantities(operation);
+      const { releasedQuantity } = readOperationQuantities(operation);
       if (releasedQuantity <= quantityEpsilon) {
         throw new Error("Nao ha quantidade liberada para retornar ao setor anterior.");
       }
@@ -1044,68 +1046,133 @@ app.post("/operations/toggle", requireAuth, async (req, res) => {
         throw new Error(`Quantidade de retorno maior que a liberada (${releasedQuantity}).`);
       }
 
-      const previousOperationRs = await client.query(
+      const previousOperationsRs = await client.query(
         `
         SELECT io.id,
+               io.sector_id,
+               s.name AS sector_name,
+               s.position AS sector_position,
                io.released_quantity,
-               io.completed_quantity
+               io.completed_quantity,
+               io.finished_at,
+               io.useful_minutes
         FROM public.item_operations io
         JOIN public.sectors s ON s.id = io.sector_id
         WHERE io.item_id = $1
           AND s.position < $2
-        ORDER BY s.position DESC
-        LIMIT 1;
+        ORDER BY s.position ASC;
         `,
         [operation.item_id, operation.sector_position]
       );
-      const previousOperation = previousOperationRs.rows[0];
-      if (!previousOperation) {
+      const previousOperations = previousOperationsRs.rows;
+      if (previousOperations.length === 0) {
         throw new Error("Nao existe setor anterior para retorno nesta operacao.");
       }
 
-      const previousCompletedQuantity = Number(previousOperation.completed_quantity || 0);
-      if (rollbackQuantity > previousCompletedQuantity + quantityEpsilon) {
-        throw new Error(
-          `Quantidade de retorno maior que a baixada no setor anterior (${previousCompletedQuantity}).`
-        );
+      const targetOperation = targetSectorId
+        ? previousOperations.find((candidate) => candidate.sector_id === targetSectorId)
+        : previousOperations[previousOperations.length - 1];
+      if (!targetOperation) {
+        throw new Error("Setor de retorno invalido para esta operacao.");
       }
 
-      const nextReleasedQuantity = Math.max(0, releasedQuantity - rollbackQuantity);
-      const nextCompletedQuantity = Math.min(completedQuantity, nextReleasedQuantity);
-      const currentIsDone =
-        nextReleasedQuantity > quantityEpsilon && nextCompletedQuantity >= nextReleasedQuantity - quantityEpsilon;
-
-      await client.query(
-        `UPDATE public.item_operations
-         SET status=$1::operation_status,
-             finished_at=$2,
-             useful_minutes=$3,
-             released_quantity=$4,
-             completed_quantity=$5
-         WHERE id=$6;`,
-        [
-          currentIsDone ? "CONCLUIDA" : "PENDENTE",
-          currentIsDone ? operation.finished_at : null,
-          currentIsDone ? operation.useful_minutes : null,
-          nextReleasedQuantity,
-          nextCompletedQuantity,
-          operation.id
-        ]
+      const affectedOperationsRs = await client.query(
+        `
+        SELECT io.id,
+               io.sector_id,
+               s.name AS sector_name,
+               s.position AS sector_position,
+               io.released_quantity,
+               io.completed_quantity,
+               io.finished_at,
+               io.useful_minutes
+        FROM public.item_operations io
+        JOIN public.sectors s ON s.id = io.sector_id
+        WHERE io.item_id = $1
+          AND s.position >= $2
+          AND s.position <= $3
+        ORDER BY s.position ASC;
+        `,
+        [operation.item_id, targetOperation.sector_position, operation.sector_position]
       );
+      const affectedOperations = affectedOperationsRs.rows;
+      if (affectedOperations.length === 0) {
+        throw new Error("Nao foi possivel determinar os setores afetados para retorno.");
+      }
 
-      const previousReleasedQuantity = Number(previousOperation.released_quantity || 0);
-      const nextPreviousCompletedQuantity = Math.max(0, previousCompletedQuantity - rollbackQuantity);
-      const previousIsDone = nextPreviousCompletedQuantity >= previousReleasedQuantity - quantityEpsilon;
+      for (const affectedOperation of affectedOperations) {
+        const affectedReleased = Number(affectedOperation.released_quantity || 0);
+        const affectedCompleted = Number(affectedOperation.completed_quantity || 0);
+        if (Number(affectedOperation.sector_position) === Number(targetOperation.sector_position)) {
+          if (rollbackQuantity > affectedCompleted + quantityEpsilon) {
+            throw new Error(
+              `Quantidade de retorno maior que a baixada no setor de destino (${affectedCompleted}).`
+            );
+          }
+          continue;
+        }
 
-      await client.query(
-        `UPDATE public.item_operations
-         SET completed_quantity=$1,
-             status=$2::operation_status,
-             finished_at=CASE WHEN $2::operation_status='PENDENTE'::operation_status THEN NULL ELSE finished_at END,
-             useful_minutes=CASE WHEN $2::operation_status='PENDENTE'::operation_status THEN NULL ELSE useful_minutes END
-         WHERE id=$3;`,
-        [nextPreviousCompletedQuantity, previousIsDone ? "CONCLUIDA" : "PENDENTE", previousOperation.id]
-      );
+        if (rollbackQuantity > affectedReleased + quantityEpsilon) {
+          throw new Error(
+            `Quantidade de retorno maior que a liberada no setor ${affectedOperation.sector_name} (${affectedReleased}).`
+          );
+        }
+
+        if (
+          Number(affectedOperation.sector_position) < Number(operation.sector_position) &&
+          rollbackQuantity > affectedCompleted + quantityEpsilon
+        ) {
+          throw new Error(
+            `Quantidade de retorno maior que a baixada no setor ${affectedOperation.sector_name} (${affectedCompleted}).`
+          );
+        }
+      }
+
+      for (const affectedOperation of affectedOperations) {
+        const affectedReleased = Number(affectedOperation.released_quantity || 0);
+        const affectedCompleted = Number(affectedOperation.completed_quantity || 0);
+        const isTargetSector =
+          Number(affectedOperation.sector_position) === Number(targetOperation.sector_position);
+        const isCurrentSector =
+          Number(affectedOperation.sector_position) === Number(operation.sector_position);
+
+        let nextReleasedQuantity = affectedReleased;
+        let nextCompletedQuantity = affectedCompleted;
+
+        if (isTargetSector) {
+          nextCompletedQuantity = Math.max(0, affectedCompleted - rollbackQuantity);
+        } else {
+          nextReleasedQuantity = Math.max(0, affectedReleased - rollbackQuantity);
+          if (isCurrentSector) {
+            nextCompletedQuantity = Math.min(affectedCompleted, nextReleasedQuantity);
+          } else {
+            nextCompletedQuantity = Math.max(0, affectedCompleted - rollbackQuantity);
+          }
+          nextCompletedQuantity = Math.min(nextCompletedQuantity, nextReleasedQuantity);
+        }
+
+        const operationIsDone =
+          nextReleasedQuantity > quantityEpsilon &&
+          nextCompletedQuantity >= nextReleasedQuantity - quantityEpsilon;
+
+        await client.query(
+          `UPDATE public.item_operations
+           SET status=$1::operation_status,
+               finished_at=$2,
+               useful_minutes=$3,
+               released_quantity=$4,
+               completed_quantity=$5
+           WHERE id=$6;`,
+          [
+            operationIsDone ? "CONCLUIDA" : "PENDENTE",
+            operationIsDone ? affectedOperation.finished_at : null,
+            operationIsDone ? affectedOperation.useful_minutes : null,
+            nextReleasedQuantity,
+            nextCompletedQuantity,
+            affectedOperation.id
+          ]
+        );
+      }
 
       notificationEmployeeId = operation.previous_employee_id || null;
       notificationAction = "ROLLBACK_OPERATION";

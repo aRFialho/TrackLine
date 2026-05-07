@@ -542,6 +542,28 @@ small {
   border: 1px solid #cbd5e1;
 }
 
+.op-status-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.op-status-badge.pending {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #f59e0b;
+}
+
+.op-status-badge.done {
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #22c55e;
+}
+
 .order-items-wrap {
   max-height: min(72vh, 760px);
   overflow: auto;
@@ -549,7 +571,7 @@ small {
 
 .order-items-table {
   table-layout: fixed;
-  min-width: 1320px;
+  min-width: 1420px;
 }
 
 .order-items-table .col-qty {
@@ -560,8 +582,12 @@ small {
   width: 70px;
 }
 
+.order-items-table .col-manufacturer {
+  width: 170px;
+}
+
 .order-items-table .col-description {
-  width: 360px;
+  width: 320px;
 }
 
 .order-items-table .col-sector {

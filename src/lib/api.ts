@@ -214,6 +214,7 @@ export const api = {
     done: boolean;
     reason?: string;
     quantity?: number;
+    targetSectorId?: string;
   }) =>
     request<BootstrapSnapshot>("/operations/toggle", {
       method: "POST",

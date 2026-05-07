@@ -4,6 +4,7 @@ export type ImportedRow = {
   quantity: number;
   unit: string;
   description: string;
+  manufacturerCode?: string;
 };
 
 const normalize = (value: string) => value.trim().toUpperCase().replace(/\s+/g, " ");
@@ -22,6 +23,14 @@ const extractRows = (raw: Record<string, unknown>[]): ImportedRow[] => {
   const quantityKey = findHeader(headers, ["QTDE", "QTD", "QUANTIDADE"]);
   const unitKey = findHeader(headers, ["UN", "UNIDADE"]);
   const descriptionKey = findHeader(headers, ["DESCRICAO", "DESCRIÇÃO", "ITEM"]);
+  const manufacturerCodeKey = findHeader(headers, [
+    "COD.FABRICANTE",
+    "COD FABRICANTE",
+    "COD_FABRICANTE",
+    "CODFAB",
+    "CODIGO FABRICANTE",
+    "CÓD. FABRICANTE"
+  ]);
 
   if (!quantityKey || !unitKey || !descriptionKey) {
     throw new Error("Planilha precisa conter colunas: QTDE/QTD, UN e DESCRICAO.");
@@ -32,10 +41,12 @@ const extractRows = (raw: Record<string, unknown>[]): ImportedRow[] => {
       const quantityValue = Number(row[quantityKey] ?? 0);
       const unit = String(row[unitKey] ?? "").trim();
       const description = String(row[descriptionKey] ?? "").trim();
+      const manufacturerCode = manufacturerCodeKey ? String(row[manufacturerCodeKey] ?? "").trim() : "";
       return {
         quantity: Number.isFinite(quantityValue) ? quantityValue : 0,
         unit,
-        description
+        description,
+        manufacturerCode: manufacturerCode || undefined
       };
     })
     .filter((row) => row.quantity > 0 && row.description.length > 0);
@@ -50,6 +61,93 @@ const parseQuantity = (raw: string) => {
 const normalizeUnit = (raw: string) => raw.trim().toUpperCase().replace(/\./g, "");
 
 const validUnits = new Set(["UN", "UND", "PC", "PCS", "PCA", "PCT", "M", "MT", "M2", "M3", "KG", "G", "L", "LT", "CJ"]);
+
+const hasDigit = (value: string) => /\d/.test(value);
+const isBarcodeToken = (value: string) => /^\d{8,14}$/.test(value);
+const isQuantityToken = (value: string) => /^\d+(?:[.,]\d+)?$/.test(value);
+const normalizeDescriptionText = (value: string) => value.replace(/\s+/g, " ").trim();
+const looksLikeManufacturerCode = (value: string) => {
+  const token = value.trim();
+  if (!token) {
+    return false;
+  }
+  if (isBarcodeToken(token)) {
+    return false;
+  }
+  if (!hasDigit(token)) {
+    return false;
+  }
+  return /^[A-Za-z0-9./_-]{2,30}$/.test(token);
+};
+
+const splitManufacturerAndDescription = (prefixTokens: string[], suffixTokens: string[]) => {
+  let manufacturerCode = "";
+  const nextSuffix = [...suffixTokens];
+
+  const prefixManufacturerCandidate = prefixTokens.find((token) => looksLikeManufacturerCode(token));
+  if (prefixManufacturerCandidate) {
+    manufacturerCode = prefixManufacturerCandidate;
+  }
+
+  while (nextSuffix.length > 0 && isBarcodeToken(nextSuffix[0])) {
+    nextSuffix.shift();
+  }
+
+  if (!manufacturerCode && nextSuffix.length > 0 && looksLikeManufacturerCode(nextSuffix[0])) {
+    manufacturerCode = nextSuffix.shift() ?? "";
+  }
+
+  while (nextSuffix.length > 0 && isBarcodeToken(nextSuffix[0])) {
+    nextSuffix.shift();
+  }
+
+  return {
+    manufacturerCode: manufacturerCode || undefined,
+    description: normalizeDescriptionText(nextSuffix.join(" "))
+  };
+};
+
+const parsePdfLine = (line: string) => {
+  const tokens = line.split(/\s+/g).filter(Boolean);
+  if (tokens.length < 3) {
+    return undefined;
+  }
+
+  for (let i = 0; i < tokens.length - 2; i += 1) {
+    const quantityToken = tokens[i];
+    const unitToken = tokens[i + 1];
+    if (!isQuantityToken(quantityToken)) {
+      continue;
+    }
+
+    const unit = normalizeUnit(unitToken);
+    if (!validUnits.has(unit)) {
+      continue;
+    }
+
+    const quantity = parseQuantity(quantityToken);
+    if (quantity <= 0) {
+      continue;
+    }
+
+    const prefixTokens = tokens.slice(0, i);
+    const suffixTokens = tokens.slice(i + 2);
+    const { manufacturerCode, description } = splitManufacturerAndDescription(prefixTokens, suffixTokens);
+
+    if (!description || description.length < 2) {
+      continue;
+    }
+
+    return {
+      quantity,
+      unit,
+      description,
+      manufacturerCode
+    };
+  }
+
+  return undefined;
+};
 
 const parseRowsFromLines = (lines: string[]): ImportedRow[] => {
   const rows: ImportedRow[] = [];
@@ -67,23 +165,16 @@ const parseRowsFromLines = (lines: string[]): ImportedRow[] => {
       continue;
     }
 
-    const match = line.match(/^(\d+(?:[.,]\d+)?)\s+([A-Za-z0-9]{1,6})\s+(.+)$/);
-    if (!match) {
+    const parsedRow = parsePdfLine(line);
+    if (!parsedRow) {
       continue;
     }
 
-    const quantity = parseQuantity(match[1]);
-    const unit = normalizeUnit(match[2]);
-    const description = match[3].trim();
-
-    if (quantity <= 0 || description.length < 2) {
-      continue;
-    }
-    if (!afterHeader && !validUnits.has(unit)) {
+    if (!afterHeader && !validUnits.has(parsedRow.unit)) {
       continue;
     }
 
-    rows.push({ quantity, unit, description });
+    rows.push(parsedRow);
   }
 
   return rows;

@@ -38,6 +38,7 @@ export type ProductionItem = {
   id: string;
   quantity: number;
   unit: string;
+  manufacturerCode?: string;
   description: string;
   operations: ItemOperation[];
 };

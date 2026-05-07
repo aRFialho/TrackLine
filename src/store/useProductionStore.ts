@@ -42,6 +42,7 @@ type StoreState = {
     done: boolean;
     reason?: string;
     quantity?: number;
+    targetSectorId?: string;
   }) => Promise<void>;
   batchSetOperations: (payload: {
     orderId: string;
@@ -105,6 +106,7 @@ const applyOptimisticOperationChange = (state: StoreState, payload: {
   employeeId: string;
   done: boolean;
   requestedQuantity?: number;
+  rollbackTargetSectorId?: string;
 }) => {
   const nextOrders = cloneOrders(state.orders);
   const nowIso = new Date().toISOString();
@@ -127,28 +129,41 @@ const applyOptimisticOperationChange = (state: StoreState, payload: {
       if (currentIndex <= 0) {
         return nextOrders;
       }
-      const previousOperation = item.operations[currentIndex - 1];
+      const targetIndexFromPayload = payload.rollbackTargetSectorId
+        ? item.operations.findIndex((operation) => operation.sectorId === payload.rollbackTargetSectorId)
+        : -1;
+      const targetIndex = targetIndexFromPayload >= 0 ? targetIndexFromPayload : currentIndex - 1;
+      if (targetIndex < 0 || targetIndex >= currentIndex) {
+        return nextOrders;
+      }
+
       const rollbackAvailable = Math.max(0, currentOperation.releasedQuantity);
       const rollbackQuantity = Math.max(0, Math.min(rollbackAvailable, payload.requestedQuantity ?? rollbackAvailable));
       if (rollbackQuantity <= qtyEpsilon) {
         return nextOrders;
       }
 
-      currentOperation.releasedQuantity = Math.max(0, currentOperation.releasedQuantity - rollbackQuantity);
-      currentOperation.completedQuantity = Math.min(currentOperation.completedQuantity, currentOperation.releasedQuantity);
-      const currentIsDone = currentOperation.completedQuantity >= currentOperation.releasedQuantity - qtyEpsilon;
-      currentOperation.status = currentIsDone ? "CONCLUIDA" : "PENDENTE";
-      if (!currentIsDone) {
-        currentOperation.finishedAt = undefined;
-        currentOperation.usefulMinutes = undefined;
-      }
+      for (let index = targetIndex; index <= currentIndex; index += 1) {
+        const operation = item.operations[index];
+        if (index === targetIndex) {
+          operation.completedQuantity = Math.max(0, operation.completedQuantity - rollbackQuantity);
+        } else {
+          operation.releasedQuantity = Math.max(0, operation.releasedQuantity - rollbackQuantity);
+          operation.completedQuantity =
+            index === currentIndex
+              ? Math.min(operation.completedQuantity, operation.releasedQuantity)
+              : Math.max(0, operation.completedQuantity - rollbackQuantity);
+          operation.completedQuantity = Math.min(operation.completedQuantity, operation.releasedQuantity);
+        }
 
-      previousOperation.completedQuantity = Math.max(0, previousOperation.completedQuantity - rollbackQuantity);
-      const previousIsDone = previousOperation.completedQuantity >= previousOperation.releasedQuantity - qtyEpsilon;
-      previousOperation.status = previousIsDone ? "CONCLUIDA" : "PENDENTE";
-      if (!previousIsDone) {
-        previousOperation.finishedAt = undefined;
-        previousOperation.usefulMinutes = undefined;
+        const isDone =
+          operation.releasedQuantity > qtyEpsilon &&
+          operation.completedQuantity >= operation.releasedQuantity - qtyEpsilon;
+        operation.status = isDone ? "CONCLUIDA" : "PENDENTE";
+        if (!isDone) {
+          operation.finishedAt = undefined;
+          operation.usefulMinutes = undefined;
+        }
       }
 
       recomputeOrderStatus(order);
@@ -334,7 +349,7 @@ export const useProductionStore = create<StoreState>()((set) => ({
   createOrder: async (payload) => runMutation(set, () => api.createOrder(payload)),
   deleteOrder: async (orderId) => runMutation(set, () => api.deleteOrder(orderId)),
   finalizeOrder: async (orderId) => runMutation(set, () => api.finalizeOrder(orderId)),
-  setOperationDone: async ({ itemId, sectorId, employeeId, done, reason, quantity }) => {
+  setOperationDone: async ({ itemId, sectorId, employeeId, done, reason, quantity, targetSectorId }) => {
     const previousOrders = useProductionStore.getState().orders;
     set((state) => ({
       error: undefined,
@@ -343,13 +358,14 @@ export const useProductionStore = create<StoreState>()((set) => ({
         sectorId,
         employeeId,
         done,
-        requestedQuantity: done ? undefined : quantity
+        requestedQuantity: done ? undefined : quantity,
+        rollbackTargetSectorId: done ? undefined : targetSectorId
       })
     }));
     set({ error: undefined });
     suppressRealtimeUntil = Date.now() + 300;
     try {
-      const snapshot = await api.setOperationDone({ itemId, sectorId, employeeId, done, reason, quantity });
+      const snapshot = await api.setOperationDone({ itemId, sectorId, employeeId, done, reason, quantity, targetSectorId });
       applySnapshot(set, snapshot);
     } catch (error) {
       set({

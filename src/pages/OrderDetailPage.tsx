@@ -22,6 +22,7 @@ type ActionDialogState =
       itemId: string;
       sectorId: string;
       maxQuantity: number;
+      targetOptions: Array<{ id: string; name: string }>;
     };
 
 function OrderDetailPage() {
@@ -34,6 +35,7 @@ function OrderDetailPage() {
   const [dialog, setDialog] = useState<ActionDialogState>({ kind: "none" });
   const [dialogQuantity, setDialogQuantity] = useState("");
   const [dialogReason, setDialogReason] = useState("");
+  const [dialogTargetSectorId, setDialogTargetSectorId] = useState("");
   const [dialogError, setDialogError] = useState("");
 
   const parseInputQuantity = (raw: string) => {
@@ -46,6 +48,7 @@ function OrderDetailPage() {
     setDialog({ kind: "none" });
     setDialogQuantity("");
     setDialogReason("");
+    setDialogTargetSectorId("");
     setDialogError("");
   };
 
@@ -126,6 +129,10 @@ function OrderDetailPage() {
       setDialogError("Motivo obrigatorio para retorno.");
       return;
     }
+    if (!dialogTargetSectorId) {
+      setDialogError("Selecione o setor de retorno.");
+      return;
+    }
 
     setRunningBatchKey(`${dialog.cellKey}-rollback`);
     setCellErrors((current) => ({ ...current, [dialog.cellKey]: "" }));
@@ -137,7 +144,8 @@ function OrderDetailPage() {
       employeeId: "",
       done: false,
       reason: rollbackReason,
-      quantity: requestedQuantity
+      quantity: requestedQuantity,
+      targetSectorId: dialogTargetSectorId
     }).finally(() => setRunningBatchKey(""));
   };
 
@@ -175,6 +183,7 @@ function OrderDetailPage() {
               <tr>
                 <th className="col-qty">QTDE</th>
                 <th className="col-unit">UN</th>
+                <th className="col-manufacturer">COD. FABRICANTE</th>
                 <th className="col-description">DESCRICAO</th>
                 {sectors.map((sector) => (
                   <th key={sector.id} className="col-sector">
@@ -194,6 +203,7 @@ function OrderDetailPage() {
                   <tr key={item.id} className={itemCompleted ? "item-complete-row" : ""}>
                     <td>{item.quantity}</td>
                     <td>{item.unit}</td>
+                    <td>{item.manufacturerCode || "-"}</td>
                     <td className="product-description-cell">{item.description}</td>
                     {sectors.map((sector) => {
                       const operation = item.operations.find((op) => op.sectorId === sector.id);
@@ -227,7 +237,10 @@ function OrderDetailPage() {
                       const cellKey = `${item.id}-${sector.id}`;
                       const selectedEmployeeId = selectedOperators[cellKey] ?? operation.employeeId ?? "";
                       const rollbackAvailableQuantity = Math.max(0, Number(operation.releasedQuantity || 0));
-                      const hasPreviousSector = (sectorPositionById[sector.id] ?? 0) > 0;
+                      const currentSectorPosition = sectorPositionById[sector.id] ?? 0;
+                      const rollbackTargets = sectors.filter(
+                        (candidateSector) => (sectorPositionById[candidateSector.id] ?? 0) < currentSectorPosition
+                      );
 
                       return (
                         <td key={cellKey} className="operation-cell">
@@ -236,7 +249,12 @@ function OrderDetailPage() {
                             <span className="qty-chip released">Liberada: {operation.releasedQuantity}</span>
                             <span className="qty-chip completed">Baixada: {operation.completedQuantity}</span>
                           </div>
-                          <small>Status: {operation.status}</small>
+                          <small>
+                            Status:{" "}
+                            <span className={operation.status === "CONCLUIDA" ? "op-status-badge done" : "op-status-badge pending"}>
+                              {operation.status}
+                            </span>
+                          </small>
                           <select
                             value={selectedEmployeeId}
                             onChange={(event) => {
@@ -294,24 +312,27 @@ function OrderDetailPage() {
                             </button>
                             <button
                               className="mini-btn ghost"
-                              disabled={!hasPreviousSector || rollbackAvailableQuantity <= 0}
+                              disabled={rollbackTargets.length === 0 || rollbackAvailableQuantity <= 0}
                               type="button"
                               onClick={() => {
                                 setCellErrors((current) => ({ ...current, [cellKey]: "" }));
+                                const immediatePreviousTarget = rollbackTargets[rollbackTargets.length - 1];
                                 setDialog({
                                   kind: "rollback",
                                   cellKey,
                                   orderId: order.id,
                                   itemId: item.id,
                                   sectorId: sector.id,
-                                  maxQuantity: rollbackAvailableQuantity
+                                  maxQuantity: rollbackAvailableQuantity,
+                                  targetOptions: rollbackTargets.map((target) => ({ id: target.id, name: target.name }))
                                 });
+                                setDialogTargetSectorId(immediatePreviousTarget?.id ?? "");
                                 setDialogQuantity(String(Math.min(rollbackAvailableQuantity, 1)));
                                 setDialogReason("");
                                 setDialogError("");
                               }}
                             >
-                              {runningBatchKey === `${cellKey}-rollback` ? "..." : "Retornar operacao anterior"}
+                              {runningBatchKey === `${cellKey}-rollback` ? "..." : "Retornar operacao"}
                             </button>
                           </div>
                           {cellErrors[cellKey] ? <small className="error">{cellErrors[cellKey]}</small> : null}
@@ -325,7 +346,7 @@ function OrderDetailPage() {
               })}
               {filteredItems.length === 0 ? (
                 <tr>
-                  <td colSpan={3 + sectors.length}>Nenhum item encontrado para o filtro informado.</td>
+                  <td colSpan={4 + sectors.length}>Nenhum item encontrado para o filtro informado.</td>
                 </tr>
               ) : null}
             </tbody>
@@ -336,12 +357,28 @@ function OrderDetailPage() {
       {dialog.kind !== "none" ? (
         <div className="action-modal-backdrop" role="presentation" onClick={closeDialog}>
           <div className="action-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
-            <h3>{dialog.kind === "batch" ? "Baixa por lote" : "Retornar operacao anterior"}</h3>
+            <h3>{dialog.kind === "batch" ? "Baixa por lote" : "Retornar operacao"}</h3>
             <form className="form-grid" onSubmit={submitDialog}>
               <label className="full">
                 Quantidade (max {dialog.maxQuantity})
                 <input value={dialogQuantity} onChange={(event) => setDialogQuantity(event.target.value)} />
               </label>
+              {dialog.kind === "rollback" ? (
+                <label className="full">
+                  Retornar para setor
+                  <select
+                    value={dialogTargetSectorId}
+                    onChange={(event) => setDialogTargetSectorId(event.target.value)}
+                  >
+                    <option value="">Selecionar</option>
+                    {dialog.targetOptions.map((target) => (
+                      <option key={target.id} value={target.id}>
+                        {target.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
               {dialog.kind === "rollback" ? (
                 <label className="full">
                   Motivo do retorno
