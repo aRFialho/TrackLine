@@ -45,6 +45,14 @@ const initWeekMap = () =>
     return acc;
   }, {} as Record<WeekdayCode, { released: number; completed: number }>);
 
+const normalizeDescriptionKey = (value: string) =>
+  String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
 function ReportsPage() {
   const { orders, sectors, employees, notifications } = useProductionStore();
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("");
@@ -200,11 +208,13 @@ function ReportsPage() {
     orders.forEach((order) => {
       order.items.forEach((item) => {
         item.operations.forEach((operation) => {
-          const key = `${operation.sectorId}::${item.description}`;
+          const normalizedDescription = normalizeDescriptionKey(item.description);
+          const key = `${operation.sectorId}::${normalizedDescription}`;
+          const displayDescription = String(item.description || "").replace(/\s+/g, " ").trim();
           const current = map.get(key) ?? {
             sectorId: operation.sectorId,
             sectorName: sectorById[operation.sectorId] ?? operation.sectorId,
-            description: item.description,
+            description: displayDescription,
             released: 0,
             completed: 0,
             pending: 0
