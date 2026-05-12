@@ -29,7 +29,7 @@ body {
   background: radial-gradient(circle at 0% 0%, #dff9f3 0, #f1f5f9 30%);
   color: var(--text);
   overflow-x: hidden;
-  touch-action: pan-x pan-y;
+  touch-action: auto;
 }
 
 #root {
@@ -37,9 +37,11 @@ body {
 }
 
 .app-shell {
+  height: 100dvh;
   min-height: 100dvh;
   display: grid;
   grid-template-columns: 280px 1fr;
+  overflow: hidden;
 }
 
 .sidebar {
@@ -50,6 +52,7 @@ body {
   flex-direction: column;
   gap: 12px;
   min-height: 100dvh;
+  overflow: hidden;
 }
 
 .brand {
@@ -114,6 +117,10 @@ body {
 
 .content {
   padding: 20px;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .notifications-box {
@@ -170,6 +177,7 @@ body {
 .page {
   display: grid;
   gap: 16px;
+  min-width: 0;
 }
 
 .page-title h1 {
@@ -186,6 +194,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 16px;
+  min-width: 0;
 }
 
 .card h2 {
@@ -295,6 +304,7 @@ button.danger {
 }
 
 .table-wrap {
+  max-width: 100%;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
 }
@@ -723,12 +733,16 @@ hr {
 
 @media (max-width: 900px) {
   .app-shell {
+    height: auto;
     grid-template-columns: 1fr;
+    overflow: visible;
   }
 
   .sidebar {
     border-right: 0;
     border-bottom: 1px solid var(--border);
+    min-height: auto;
+    overflow: visible;
   }
 
   .form-grid,
@@ -789,6 +803,7 @@ hr {
 
   .content {
     padding: 14px;
+    overflow: auto;
   }
 
   .card {
