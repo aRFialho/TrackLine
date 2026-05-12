@@ -32,6 +32,7 @@ type StoreState = {
   deleteEmployee: (employeeId: string) => Promise<void>;
   updateSchedule: (next: WorkSchedule) => Promise<void>;
   createOrder: (payload: { number: string; name: string; rows: ImportedRow[] }) => Promise<void>;
+  addOrderItem: (orderId: string, payload: { quantity: number; description: string; manufacturerCode?: string }) => Promise<void>;
   deleteOrder: (orderId: string) => Promise<void>;
   finalizeOrder: (orderId: string) => Promise<void>;
   setOperationDone: (payload: {
@@ -347,6 +348,7 @@ export const useProductionStore = create<StoreState>()((set) => ({
   deleteEmployee: async (employeeId) => runMutation(set, () => api.deleteEmployee(employeeId)),
   updateSchedule: async (next) => runMutation(set, () => api.updateSchedule(next)),
   createOrder: async (payload) => runMutation(set, () => api.createOrder(payload)),
+  addOrderItem: async (orderId, payload) => runMutation(set, () => api.addOrderItem(orderId, payload)),
   deleteOrder: async (orderId) => runMutation(set, () => api.deleteOrder(orderId)),
   finalizeOrder: async (orderId) => runMutation(set, () => api.finalizeOrder(orderId)),
   setOperationDone: async ({ itemId, sectorId, employeeId, done, reason, quantity, targetSectorId }) => {

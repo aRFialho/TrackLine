@@ -1,7 +1,7 @@
 import { FormEvent, useMemo, useState } from "react";
 import dayjs from "dayjs";
 import { useNavigate } from "react-router-dom";
-import { parseOrderFile } from "../lib/importers";
+import { parseOrderFile, type ImportedRow } from "../lib/importers";
 import { useProductionStore } from "../store/useProductionStore";
 import { useAuthStore } from "../store/useAuthStore";
 
@@ -16,6 +16,10 @@ function OrdersPage() {
   const [name, setName] = useState("");
   const [query, setQuery] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [manualItems, setManualItems] = useState<ImportedRow[]>([]);
+  const [manualQuantity, setManualQuantity] = useState("");
+  const [manualCode, setManualCode] = useState("");
+  const [manualDescription, setManualDescription] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<"ABERTAS" | "FINALIZADAS">("ABERTAS");
@@ -83,14 +87,15 @@ function OrdersPage() {
       setError("Informe o numero da OP.");
       return;
     }
-    if (!file) {
-      setError("Anexe um arquivo .xlsx, .csv ou .pdf.");
+    if (!file && manualItems.length === 0) {
+      setError("Anexe um arquivo .xlsx/.csv/.pdf ou adicione itens manualmente.");
       return;
     }
 
     setLoading(true);
     try {
-      const rows = await parseOrderFile(file);
+      const importedRows = file ? await parseOrderFile(file) : [];
+      const rows = [...manualItems, ...importedRows];
       if (rows.length === 0) {
         setError("O arquivo nao possui linhas validas.");
         return;
@@ -99,6 +104,10 @@ function OrdersPage() {
       setNumber("");
       setName("");
       setFile(null);
+      setManualItems([]);
+      setManualQuantity("");
+      setManualCode("");
+      setManualDescription("");
       const input = document.getElementById("op-file-input") as HTMLInputElement | null;
       if (input) {
         input.value = "";
@@ -108,6 +117,40 @@ function OrdersPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleAddManualItem = () => {
+    setError("");
+    const quantity = Number(
+      manualQuantity
+        .trim()
+        .replace(/\s+/g, "")
+        .replace(/\.(?=\d{3}(\D|$))/g, "")
+        .replace(",", ".")
+    );
+    const description = manualDescription.replace(/\s+/g, " ").trim();
+    const manufacturerCode = manualCode.trim();
+
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      setError("Quantidade manual invalida.");
+      return;
+    }
+    if (!description) {
+      setError("Descricao manual obrigatoria.");
+      return;
+    }
+
+    setManualItems((current) => [
+      ...current,
+      {
+        quantity,
+        description,
+        manufacturerCode: manufacturerCode || undefined
+      }
+    ]);
+    setManualQuantity("");
+    setManualCode("");
+    setManualDescription("");
   };
 
   return (
@@ -138,6 +181,68 @@ function OrdersPage() {
                 onChange={(event) => setFile(event.target.files?.[0] ?? null)}
               />
             </label>
+            <div className="full card manual-item-card">
+              <h3>Incluir item manual</h3>
+              <div className="form-grid">
+                <label>
+                  Qtde
+                  <input value={manualQuantity} onChange={(event) => setManualQuantity(event.target.value)} placeholder="Ex: 10" />
+                </label>
+                <label>
+                  Codigo
+                  <input value={manualCode} onChange={(event) => setManualCode(event.target.value)} placeholder="Ex: 124257" />
+                </label>
+                <label className="full">
+                  Descricao
+                  <input
+                    value={manualDescription}
+                    onChange={(event) => setManualDescription(event.target.value)}
+                    placeholder="Ex: Sofa 3 lugares linha Prime"
+                  />
+                </label>
+                <div className="actions full">
+                  <button type="button" className="mini-btn" onClick={handleAddManualItem}>
+                    Adicionar item manual
+                  </button>
+                </div>
+              </div>
+              {manualItems.length > 0 ? (
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Qtde</th>
+                        <th>Codigo</th>
+                        <th>Descricao</th>
+                        <th>Acoes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {manualItems.map((item, index) => (
+                        <tr key={`${item.description}-${index}`}>
+                          <td>{item.quantity}</td>
+                          <td>{item.manufacturerCode || "-"}</td>
+                          <td>{item.description}</td>
+                          <td>
+                            <button
+                              type="button"
+                              className="mini-btn ghost"
+                              onClick={() =>
+                                setManualItems((current) => current.filter((_, candidateIndex) => candidateIndex !== index))
+                              }
+                            >
+                              Remover
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <small>Nenhum item manual adicionado.</small>
+              )}
+            </div>
             <button disabled={loading} type="submit">
               {loading ? "Importando..." : "Adicionar OP"}
             </button>

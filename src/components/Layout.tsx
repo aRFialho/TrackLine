@@ -65,7 +65,7 @@ function Layout() {
                           ? "retornou operacao de"
                           : "executou baixa em lote de"}{" "}
                     <b>
-                      {`${notification.processedQuantity ?? notification.quantity} ${notification.unit}`}
+                      {`${notification.processedQuantity ?? notification.quantity}`}
                     </b>{" "}
                     de <b>{notification.itemDescription}</b> no setor <b>{notification.sectorName}</b>.
                   </p>

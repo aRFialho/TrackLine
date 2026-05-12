@@ -3,6 +3,7 @@ import { FormEvent, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { exportOrderCsvSemicolon, exportOrderXlsxDetailed } from "../lib/exporters";
 import { useProductionStore } from "../store/useProductionStore";
+import { useAuthStore } from "../store/useAuthStore";
 
 type ActionDialogState =
   | { kind: "none" }
@@ -27,11 +28,18 @@ type ActionDialogState =
 
 function OrderDetailPage() {
   const { orderId = "" } = useParams();
-  const { orders, sectors, employees, setOperationDone, batchSetOperations } = useProductionStore();
+  const { orders, sectors, employees, setOperationDone, batchSetOperations, addOrderItem } = useProductionStore();
+  const { user } = useAuthStore();
+  const isAdmin = user?.role === "admin";
   const [selectedOperators, setSelectedOperators] = useState<Record<string, string>>({});
   const [cellErrors, setCellErrors] = useState<Record<string, string>>({});
   const [runningBatchKey, setRunningBatchKey] = useState<string>("");
   const [itemQuery, setItemQuery] = useState("");
+  const [manualQuantity, setManualQuantity] = useState("");
+  const [manualCode, setManualCode] = useState("");
+  const [manualDescription, setManualDescription] = useState("");
+  const [manualItemError, setManualItemError] = useState("");
+  const [manualItemLoading, setManualItemLoading] = useState(false);
   const [dialog, setDialog] = useState<ActionDialogState>({ kind: "none" });
   const [dialogQuantity, setDialogQuantity] = useState("");
   const [dialogReason, setDialogReason] = useState("");
@@ -149,6 +157,38 @@ function OrderDetailPage() {
     }).finally(() => setRunningBatchKey(""));
   };
 
+  const handleAddManualItem = async () => {
+    setManualItemError("");
+    const parsedQuantity = parseInputQuantity(manualQuantity);
+    const parsedDescription = manualDescription.replace(/\s+/g, " ").trim();
+    const parsedCode = manualCode.trim();
+
+    if (!Number.isFinite(parsedQuantity) || parsedQuantity <= 0) {
+      setManualItemError("Quantidade invalida.");
+      return;
+    }
+    if (!parsedDescription) {
+      setManualItemError("Descricao obrigatoria.");
+      return;
+    }
+
+    setManualItemLoading(true);
+    try {
+      await addOrderItem(order.id, {
+        quantity: parsedQuantity,
+        description: parsedDescription,
+        manufacturerCode: parsedCode || undefined
+      });
+      setManualQuantity("");
+      setManualCode("");
+      setManualDescription("");
+    } catch (error) {
+      setManualItemError(error instanceof Error ? error.message : "Falha ao incluir item.");
+    } finally {
+      setManualItemLoading(false);
+    }
+  };
+
   return (
     <section className="page">
       <header className="page-title">
@@ -168,6 +208,36 @@ function OrderDetailPage() {
         </div>
       </header>
 
+      {isAdmin ? (
+        <div className="card">
+          <h2>Incluir item manual nesta OP</h2>
+          <div className="form-grid">
+            <label>
+              Qtde
+              <input value={manualQuantity} onChange={(event) => setManualQuantity(event.target.value)} placeholder="Ex: 12" />
+            </label>
+            <label>
+              Codigo
+              <input value={manualCode} onChange={(event) => setManualCode(event.target.value)} placeholder="Ex: 124257" />
+            </label>
+            <label className="full">
+              Descricao
+              <input
+                value={manualDescription}
+                onChange={(event) => setManualDescription(event.target.value)}
+                placeholder="Ex: Sofa 3 lugares linha Prime"
+              />
+            </label>
+            <div className="actions full">
+              <button type="button" onClick={() => void handleAddManualItem()} disabled={manualItemLoading}>
+                {manualItemLoading ? "Adicionando..." : "Adicionar item"}
+              </button>
+            </div>
+          </div>
+          {manualItemError ? <p className="error">{manualItemError}</p> : null}
+        </div>
+      ) : null}
+
       <div className="card">
         <div className="section-head">
           <h2>Itens da OP</h2>
@@ -182,8 +252,7 @@ function OrderDetailPage() {
             <thead>
               <tr>
                 <th className="col-qty">QTDE</th>
-                <th className="col-unit">UN</th>
-                <th className="col-manufacturer">COD. FABRICANTE</th>
+                <th className="col-manufacturer">CODIGO</th>
                 <th className="col-description">DESCRICAO</th>
                 {sectors.map((sector) => (
                   <th key={sector.id} className="col-sector">
@@ -202,7 +271,6 @@ function OrderDetailPage() {
                 return (
                   <tr key={item.id} className={itemCompleted ? "item-complete-row" : ""}>
                     <td>{item.quantity}</td>
-                    <td>{item.unit}</td>
                     <td>{item.manufacturerCode || "-"}</td>
                     <td className="product-description-cell">{item.description}</td>
                     {sectors.map((sector) => {
@@ -346,7 +414,7 @@ function OrderDetailPage() {
               })}
               {filteredItems.length === 0 ? (
                 <tr>
-                  <td colSpan={4 + sectors.length}>Nenhum item encontrado para o filtro informado.</td>
+                  <td colSpan={3 + sectors.length}>Nenhum item encontrado para o filtro informado.</td>
                 </tr>
               ) : null}
             </tbody>

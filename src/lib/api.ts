@@ -199,6 +199,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload)
     }),
+  addOrderItem: (orderId: string, payload: { quantity: number; description: string; manufacturerCode?: string }) =>
+    request<BootstrapSnapshot>(`/orders/${orderId}/items`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
   finalizeOrder: (orderId: string) =>
     request<BootstrapSnapshot>(`/orders/${orderId}/finalize`, {
       method: "POST"

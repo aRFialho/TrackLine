@@ -11,7 +11,7 @@
     "dev:web": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "desktop:build": "npm run build && electron-builder",
+    "desktop:build": "npm run build && electron-builder --win --x64 --ia32",
     "android:init": "npm run build && npx cap add android",
     "android:sync": "npm run build && npx cap sync android",
     "android:open": "npx cap open android",
@@ -44,7 +44,16 @@
       "output": "release"
     },
     "win": {
-      "target": "nsis",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "ia32"
+          ]
+        }
+      ],
+      "artifactName": "${productName} Setup ${version} ${arch}.${ext}",
       "icon": "public/TL.ico",
       "signAndEditExecutable": false,
       "verifyUpdateCodeSignature": false

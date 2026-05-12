@@ -16,6 +16,7 @@
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  overflow: auto;
 }
 
 * {
@@ -28,6 +29,7 @@ body {
   background: radial-gradient(circle at 0% 0%, #dff9f3 0, #f1f5f9 30%);
   color: var(--text);
   overflow-x: hidden;
+  touch-action: pan-x pan-y;
 }
 
 #root {
@@ -47,6 +49,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-height: 100dvh;
 }
 
 .brand {
@@ -118,7 +121,7 @@ body {
   padding-top: 12px;
   margin-top: 8px;
   flex: 1;
-  min-height: 0;
+  min-height: 240px;
   display: flex;
   flex-direction: column;
 }
@@ -131,15 +134,19 @@ body {
 .notifications-list {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  display: grid;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
 }
 
 .notifications-list p {
   margin: 0;
-  font-size: 12px;
-  line-height: 1.35;
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .notification-item {
@@ -151,7 +158,8 @@ body {
 
 .notification-item small {
   margin-top: 4px;
-  font-size: 11px;
+  font-size: 12px;
+  color: #475569;
 }
 
 .status-line {
@@ -356,6 +364,8 @@ small {
   display: block;
   color: var(--muted);
   margin-top: 6px;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .error {
@@ -565,44 +575,44 @@ small {
 }
 
 .order-items-wrap {
-  max-height: min(72vh, 760px);
-  overflow: auto;
+  max-height: min(74vh, 800px);
+  overflow-x: auto;
+  overflow-y: auto;
+  border: 1px solid #dbe3ef;
+  border-radius: 10px;
 }
 
 .order-items-table {
   table-layout: fixed;
-  min-width: 1420px;
+  min-width: 1220px;
+  width: max(100%, 1220px);
 }
 
 .order-items-table .col-qty {
-  width: 64px;
-}
-
-.order-items-table .col-unit {
-  width: 70px;
+  width: 90px;
 }
 
 .order-items-table .col-manufacturer {
-  width: 170px;
+  width: 180px;
 }
 
 .order-items-table .col-description {
-  width: 320px;
+  width: 380px;
 }
 
 .order-items-table .col-sector {
-  width: 220px;
+  width: 260px;
 }
 
 .product-description-cell {
-  font-size: 18px;
+  font-size: 19px;
   line-height: 1.35;
-  font-weight: 700;
+  font-weight: 800;
   color: #0f172a;
 }
 
 .operation-cell {
-  padding: 8px 8px 10px;
+  padding: 9px 9px 11px;
 }
 
 .operation-cell.empty {
@@ -612,18 +622,36 @@ small {
 .operation-card {
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 8px;
-  min-height: 248px;
+  padding: 10px;
+  min-height: 280px;
   display: grid;
   grid-template-rows: auto auto auto 1fr auto auto;
-  gap: 6px;
+  gap: 8px;
   align-content: start;
   background: #fff;
+  width: 100%;
+  min-width: 0;
 }
 
 .operation-card select {
   width: 100%;
   min-height: 40px;
+}
+
+.operation-card .mini-btn {
+  width: 100%;
+  white-space: normal;
+  line-height: 1.2;
+}
+
+.operation-card > small {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.manual-item-card {
+  border-style: dashed;
+  background: #f8fafc;
 }
 
 .item-complete-row td {
@@ -720,6 +748,7 @@ hr {
 
   .content {
     padding: 14px;
+    min-width: 0;
   }
 
   th,
@@ -729,19 +758,19 @@ hr {
   }
 
   .product-description-cell {
-    font-size: 15px;
+    font-size: 16px;
   }
 
   .order-items-table .col-description {
-    width: 280px;
+    width: 320px;
   }
 
   .order-items-table .col-sector {
-    width: 210px;
+    width: 230px;
   }
 
   .operation-card {
-    min-height: 236px;
+    min-height: 252px;
   }
 
   .login-card {
@@ -780,10 +809,6 @@ hr {
     padding: 14px;
   }
 
-  .notifications-list {
-    max-height: 28vh;
-  }
-
   .page-title h1 {
     font-size: 1.35rem;
   }
@@ -820,7 +845,8 @@ hr {
   }
 
   .notifications-box {
-    max-height: 220px;
+    min-height: 220px;
+    max-height: 280px;
   }
 
   .sector-check-list {
@@ -834,7 +860,11 @@ hr {
   .page-title p,
   .muted-line,
   small {
-    font-size: 12px;
+    font-size: 13px;
+  }
+
+  .order-items-wrap {
+    max-height: 68vh;
   }
 }
 
@@ -885,6 +915,11 @@ hr {
   }
 
   .notifications-box {
-    display: none;
+    min-height: 120px;
+    max-height: 160px;
+  }
+
+  .content {
+    overflow: auto;
   }
 }

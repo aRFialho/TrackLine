@@ -369,7 +369,7 @@ async function loadSnapshot(client) {
       "SELECT id, number, name, status, created_at, opened_at, finished_at FROM public.production_orders ORDER BY created_at DESC;"
     ),
     client.query(
-      "SELECT id, order_id, quantity, unit, manufacturer_code, description FROM public.production_items ORDER BY created_at ASC;"
+      "SELECT id, order_id, quantity, manufacturer_code, description FROM public.production_items ORDER BY created_at ASC;"
     ),
     client.query(
       "SELECT id, item_id, sector_id, employee_id, status, released_at, started_at, finished_at, useful_minutes, released_quantity, completed_quantity FROM public.item_operations ORDER BY created_at ASC;"
@@ -388,7 +388,6 @@ async function loadSnapshot(client) {
              po.number AS order_number,
              pi.description AS item_description,
              pi.quantity,
-             pi.unit,
              s.name AS sector_name,
              e.name AS employee_name
       FROM public.operation_notifications n
@@ -439,7 +438,6 @@ async function loadSnapshot(client) {
     existing.push({
       id: row.id,
       quantity: Number(row.quantity),
-      unit: row.unit,
       manufacturerCode: row.manufacturer_code || undefined,
       description: row.description,
       operations: operationsByItem.get(row.id) || []
@@ -467,7 +465,6 @@ async function loadSnapshot(client) {
     itemId: row.item_id,
     itemDescription: row.item_description,
     quantity: Number(row.quantity),
-    unit: row.unit,
     sectorName: row.sector_name,
     employeeName: row.employee_name || undefined,
     rollbackReason: row.rollback_reason || undefined,
@@ -918,7 +915,6 @@ app.post("/orders/import", requireAuth, requireAdmin, async (req, res) => {
 
     for (const row of rows) {
       const quantity = Number(row.quantity ?? 0);
-      const unit = String(row.unit ?? "UN").trim() || "UN";
       const manufacturerCode = String(row.manufacturerCode ?? "").trim();
       const description = String(row.description ?? "").trim();
       if (!description || quantity <= 0) {
@@ -927,7 +923,7 @@ app.post("/orders/import", requireAuth, requireAdmin, async (req, res) => {
 
       const itemRs = await client.query(
         "INSERT INTO public.production_items (order_id, quantity, unit, manufacturer_code, description) VALUES ($1, $2, $3, $4, $5) RETURNING id;",
-        [orderId, quantity, unit, manufacturerCode || null, description]
+        [orderId, quantity, "UN", manufacturerCode || null, description]
       );
       const itemId = itemRs.rows[0].id;
 
@@ -940,6 +936,69 @@ app.post("/orders/import", requireAuth, requireAdmin, async (req, res) => {
       }
     }
 
+    await client.query("COMMIT");
+    broadcastRefresh();
+    const snapshot = await loadSnapshot(client);
+    res.json(snapshot);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    res.status(500).json({ message: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/orders/:orderId/items", requireAuth, requireAdmin, async (req, res) => {
+  const { orderId } = req.params;
+  const { quantity, description, manufacturerCode } = req.body ?? {};
+  const parsedQuantity = Number(quantity ?? 0);
+  const parsedDescription = String(description ?? "").replace(/\s+/g, " ").trim();
+  const parsedManufacturerCode = String(manufacturerCode ?? "").trim();
+
+  if (!orderId || !Number.isFinite(parsedQuantity) || parsedQuantity <= 0 || !parsedDescription) {
+    res.status(400).json({ message: "Dados invalidos para incluir item manual." });
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const orderRs = await client.query(
+      "SELECT id, status FROM public.production_orders WHERE id=$1 LIMIT 1;",
+      [orderId]
+    );
+    const order = orderRs.rows[0];
+    if (!order) {
+      throw new Error("OP nao encontrada.");
+    }
+    if (order.status === "FINALIZADA") {
+      throw new Error("Nao e permitido incluir item em OP finalizada.");
+    }
+
+    const sectorsRs = await client.query(
+      "SELECT id, position FROM public.sectors ORDER BY position ASC, created_at ASC;"
+    );
+    if (sectorsRs.rows.length === 0) {
+      throw new Error("Cadastre ao menos um setor antes de incluir item.");
+    }
+
+    const now = new Date();
+    const itemRs = await client.query(
+      "INSERT INTO public.production_items (order_id, quantity, unit, manufacturer_code, description) VALUES ($1, $2, $3, $4, $5) RETURNING id;",
+      [orderId, parsedQuantity, "UN", parsedManufacturerCode || null, parsedDescription]
+    );
+    const itemId = itemRs.rows[0].id;
+
+    for (const sector of sectorsRs.rows) {
+      const releasedQuantity = Number(sector.position) === 1 ? parsedQuantity : 0;
+      await client.query(
+        "INSERT INTO public.item_operations (item_id, sector_id, status, released_at, released_quantity, completed_quantity) VALUES ($1, $2, 'PENDENTE', $3, $4, 0);",
+        [itemId, sector.id, now, releasedQuantity]
+      );
+    }
+
+    await recomputeOrderStatus(client, orderId);
     await client.query("COMMIT");
     broadcastRefresh();
     const snapshot = await loadSnapshot(client);

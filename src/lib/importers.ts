@@ -2,7 +2,6 @@ import * as XLSX from "xlsx";
 
 export type ImportedRow = {
   quantity: number;
-  unit: string;
   description: string;
   manufacturerCode?: string;
 };
@@ -21,9 +20,11 @@ const extractRows = (raw: Record<string, unknown>[]): ImportedRow[] => {
 
   const headers = Object.keys(raw[0]);
   const quantityKey = findHeader(headers, ["QTDE", "QTD", "QUANTIDADE"]);
-  const unitKey = findHeader(headers, ["UN", "UNIDADE"]);
-  const descriptionKey = findHeader(headers, ["DESCRICAO", "DESCRIÇÃO", "ITEM"]);
+  const descriptionKey = findHeader(headers, ["DESCRICAO", "DESCRIÇÃO", "ITEM", "PRODUTO"]);
   const manufacturerCodeKey = findHeader(headers, [
+    "CODIGO",
+    "COD",
+    "COD. FABRICANTE",
     "COD.FABRICANTE",
     "COD FABRICANTE",
     "COD_FABRICANTE",
@@ -32,19 +33,17 @@ const extractRows = (raw: Record<string, unknown>[]): ImportedRow[] => {
     "CÓD. FABRICANTE"
   ]);
 
-  if (!quantityKey || !unitKey || !descriptionKey) {
-    throw new Error("Planilha precisa conter colunas: QTDE/QTD, UN e DESCRICAO.");
+  if (!quantityKey || !descriptionKey) {
+    throw new Error("Planilha precisa conter colunas: QTDE/QTD e DESCRICAO.");
   }
 
   return raw
     .map((row) => {
       const quantityValue = Number(row[quantityKey] ?? 0);
-      const unit = String(row[unitKey] ?? "").trim();
-      const description = String(row[descriptionKey] ?? "").trim();
+      const description = String(row[descriptionKey] ?? "").replace(/\s+/g, " ").trim();
       const manufacturerCode = manufacturerCodeKey ? String(row[manufacturerCodeKey] ?? "").trim() : "";
       return {
         quantity: Number.isFinite(quantityValue) ? quantityValue : 0,
-        unit,
         description,
         manufacturerCode: manufacturerCode || undefined
       };
@@ -57,10 +56,6 @@ const parseQuantity = (raw: string) => {
   const value = Number(normalized);
   return Number.isFinite(value) ? value : 0;
 };
-
-const normalizeUnit = (raw: string) => raw.trim().toUpperCase().replace(/\./g, "");
-
-const validUnits = new Set(["UN", "UND", "PC", "PCS", "PCA", "PCT", "M", "MT", "M2", "M3", "KG", "G", "L", "LT", "CJ"]);
 
 const hasDigit = (value: string) => /\d/.test(value);
 const isBarcodeToken = (value: string) => /^\d{8,14}$/.test(value);
@@ -80,48 +75,43 @@ const looksLikeManufacturerCode = (value: string) => {
   return /^[A-Za-z0-9./_-]{2,30}$/.test(token);
 };
 
-const splitManufacturerAndDescription = (prefixTokens: string[], suffixTokens: string[]) => {
+const optionalUnits = new Set(["UN", "UND", "UNID", "PC", "PCS", "PCA", "PCT", "M", "MT", "M2", "M3", "KG", "G", "L", "LT", "CJ"]);
+
+const splitManufacturerAndDescription = (tokens: string[]) => {
+  const rest = [...tokens];
+
+  if (rest[0] && optionalUnits.has(rest[0].trim().toUpperCase().replace(/\./g, ""))) {
+    rest.shift();
+  }
+
+  while (rest.length > 0 && isBarcodeToken(rest[0])) {
+    rest.shift();
+  }
+
   let manufacturerCode = "";
-  const nextSuffix = [...suffixTokens];
-
-  const prefixManufacturerCandidate = prefixTokens.find((token) => looksLikeManufacturerCode(token));
-  if (prefixManufacturerCandidate) {
-    manufacturerCode = prefixManufacturerCandidate;
+  if (rest[0] && looksLikeManufacturerCode(rest[0])) {
+    manufacturerCode = rest.shift() ?? "";
   }
 
-  while (nextSuffix.length > 0 && isBarcodeToken(nextSuffix[0])) {
-    nextSuffix.shift();
-  }
-
-  if (!manufacturerCode && nextSuffix.length > 0 && looksLikeManufacturerCode(nextSuffix[0])) {
-    manufacturerCode = nextSuffix.shift() ?? "";
-  }
-
-  while (nextSuffix.length > 0 && isBarcodeToken(nextSuffix[0])) {
-    nextSuffix.shift();
+  while (rest.length > 0 && isBarcodeToken(rest[0])) {
+    rest.shift();
   }
 
   return {
     manufacturerCode: manufacturerCode || undefined,
-    description: normalizeDescriptionText(nextSuffix.join(" "))
+    description: normalizeDescriptionText(rest.join(" "))
   };
 };
 
 const parsePdfLine = (line: string) => {
   const tokens = line.split(/\s+/g).filter(Boolean);
-  if (tokens.length < 3) {
+  if (tokens.length < 2) {
     return undefined;
   }
 
-  for (let i = 0; i < tokens.length - 2; i += 1) {
+  for (let i = 0; i < tokens.length - 1; i += 1) {
     const quantityToken = tokens[i];
-    const unitToken = tokens[i + 1];
     if (!isQuantityToken(quantityToken)) {
-      continue;
-    }
-
-    const unit = normalizeUnit(unitToken);
-    if (!validUnits.has(unit)) {
       continue;
     }
 
@@ -130,17 +120,14 @@ const parsePdfLine = (line: string) => {
       continue;
     }
 
-    const prefixTokens = tokens.slice(0, i);
-    const suffixTokens = tokens.slice(i + 2);
-    const { manufacturerCode, description } = splitManufacturerAndDescription(prefixTokens, suffixTokens);
-
+    const tailTokens = tokens.slice(i + 1);
+    const { manufacturerCode, description } = splitManufacturerAndDescription(tailTokens);
     if (!description || description.length < 2) {
       continue;
     }
 
     return {
       quantity,
-      unit,
       description,
       manufacturerCode
     };
@@ -160,17 +147,13 @@ const parseRowsFromLines = (lines: string[]): ImportedRow[] => {
     }
 
     const upper = line.toUpperCase();
-    if (!afterHeader && upper.includes("QTDE") && upper.includes("UN") && (upper.includes("DESCR") || upper.includes("ITEM"))) {
+    if (!afterHeader && (upper.includes("QTDE") || upper.includes("QTD")) && (upper.includes("DESCR") || upper.includes("ITEM"))) {
       afterHeader = true;
       continue;
     }
 
     const parsedRow = parsePdfLine(line);
     if (!parsedRow) {
-      continue;
-    }
-
-    if (!afterHeader && !validUnits.has(parsedRow.unit)) {
       continue;
     }
 

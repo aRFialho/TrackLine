@@ -8,7 +8,6 @@ type ExportRow = {
   ItemID: string;
   Descricao: string;
   Quantidade: number;
-  Unidade: string;
   Setor: string;
   Status: string;
   Funcionario: string;
@@ -36,7 +35,6 @@ const buildRows = (order: ProductionOrder, sectors: Sector[], employees: Employe
       ItemID: item.id,
       Descricao: item.description,
       Quantidade: item.quantity,
-      Unidade: item.unit,
       Setor: sectorNameById[operation.sectorId] ?? operation.sectorId,
       Status: operation.status,
       Funcionario: operation.employeeId ? employeeById[operation.employeeId] ?? operation.employeeId : "",
@@ -64,7 +62,6 @@ export const exportOrderCsvSemicolon = (order: ProductionOrder, sectors: Sector[
     "ItemID",
     "Descricao",
     "Quantidade",
-    "Unidade",
     "Setor",
     "Status",
     "Funcionario",
@@ -98,7 +95,6 @@ export const exportOrderXlsxDetailed = (order: ProductionOrder, sectors: Sector[
     { wch: 38 },
     { wch: 38 },
     { wch: 12 },
-    { wch: 10 },
     { wch: 18 },
     { wch: 14 },
     { wch: 20 },

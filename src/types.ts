@@ -37,7 +37,6 @@ export type ItemOperation = {
 export type ProductionItem = {
   id: string;
   quantity: number;
-  unit: string;
   manufacturerCode?: string;
   description: string;
   operations: ItemOperation[];
@@ -68,7 +67,6 @@ export type ProductionNotification = {
   itemId: string;
   itemDescription: string;
   quantity: number;
-  unit: string;
   sectorName: string;
   employeeName?: string;
   rollbackReason?: string;

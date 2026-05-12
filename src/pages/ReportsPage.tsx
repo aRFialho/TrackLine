@@ -69,7 +69,6 @@ function ReportsPage() {
             itemId: item.id,
             itemDescription: item.description,
             quantity: item.quantity,
-            unit: item.unit,
             sectorId: operation.sectorId,
             sectorName: sectorById[operation.sectorId] ?? operation.sectorId,
             employeeId: operation.employeeId ?? "",
